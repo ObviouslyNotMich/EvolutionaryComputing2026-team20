@@ -1,8 +1,9 @@
 from ariel.ec import (
     EA,
+    N_OFFSPRING,
+    MATING_POOL,
     EAOperation,
     Individual,
-    Population,
 )
 
 import numpy as np
@@ -51,7 +52,7 @@ def crossover(population: Population) -> Population:
     if len(_MATING_POOL) < 2:
         return population
     for _ in range(N_OFFSPRING // 2):  # 2 children per crossover
-        a, b = random.sample(_MATING_POOL, 2)
+        a, b = random.sample(MATING_POOL, 2)
         for kid in crossover_subtree(to_genome(a.genotype), to_genome(b.genotype)):
             child = Individual()
             child.genotype = cap_size(kid).to_dict()
