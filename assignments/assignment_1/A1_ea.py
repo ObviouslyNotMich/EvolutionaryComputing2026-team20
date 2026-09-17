@@ -61,9 +61,18 @@ def crossover(population: Population) -> Population:
     return population
 
 @EAOperation
-def mutate(population: Population) -> Population:
-    """TODO: implement mutate. """
-
+def mutate(population: Population, probability: float) -> Population:
+    '''
+    Selects a random non-core node, removes its entire subtree,
+    and replaces it with a new randomly generated subtree.
+    '''
+    for i, genome in enumerate(population):
+        if random.random() < probability:
+            mutate_subtree_replacement(
+                genome,
+                max_modules=max_modules
+            )
+        validate_genome_dict(genome_sm.to_dict())
     return population
 
 @EAOperation
