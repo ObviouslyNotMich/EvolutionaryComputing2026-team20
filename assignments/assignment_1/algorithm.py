@@ -36,16 +36,22 @@ NUM_OF_MODULES: int = 5  # module budget per evolved body
 SEED = 42
 RNG = np.random.default_rng(SEED)
 
-STEPS = 5
-NUM_MODULES = 5
+STEPS = 50
+NUM_MODULES = 20
 P_MUTATION = 0.05
-POP_SIZE = 100
+POP_SIZE = 200
 TOURNAMENT_SIZE = 4
 NUM_ELITES = 1
+
+# Grow-then-cull: population multiplies by GROWTH each generation and is
+# culled back to POP_SIZE every CULL_EVERY generations.
+GROWTH = 3.0
+CULL_EVERY = 3
 
 class Assignment1EA:
     def __init__(self, targets) -> None:
         self.targets = targets
+        self.generation = 0
         self.config = EASettings(
             is_maximisation=False, # minimization
             num_steps=STEPS,
@@ -145,14 +151,27 @@ class Assignment1EA:
             k = min(TOURNAMENT_SIZE, len(candidates))
             competitors = [random.choice(candidates) for _ in range(k)]
 
-            doomed = min(competitors, key=lambda ind: ind.fitness)
+            doomed = max(competitors, key=lambda ind: ind.fitness)
 
             doomed.alive = False
             num_alive -= 1
 
         return population
 
-    # ----------------------------------------------------------------
+
+    def survivor_selection_periodic(self, population: Population) -> Population:
+        self.generation += 1
+
+        # Unevaluated individuals never survive, regardless of the cull cycle.
+        for ind in population.alive:
+            if ind.fitness_ is None:
+                ind.alive = False
+
+        if self.generation % CULL_EVERY:
+            return population  # growth generation: everyone evaluated stays
+
+        return self.survivor_selection_tournament(population)
+
 
     def mutation(self, genome: TreeGenome) -> TreeGenome:
 
@@ -181,8 +200,9 @@ class Assignment1EA:
 
         offspring: list[Individual] = []
 
-        # Define a new pool with twice the size of the target
-        target_pool = self.config.target_population_size * 2
+        # Grow relative to who is actually alive now, not a fixed target,
+        # so the population can expand generation over generation.
+        target_pool = int(len(population.alive) * GROWTH)
 
         while len(population) + len(offspring) < target_pool:
             # Always do crossover
@@ -264,7 +284,7 @@ class Assignment1EA:
             EAOperation(self.parent_selection_tournament),
             EAOperation(self.reproduction),
             EAOperation(self.evaluate),
-            EAOperation(self.survivor_selection_tournament),
+            EAOperation(self.survivor_selection_periodic),
         ]
         
         ea = EA(
