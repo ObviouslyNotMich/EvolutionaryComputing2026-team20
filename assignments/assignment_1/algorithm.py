@@ -6,6 +6,9 @@ from ariel.ec import (
     Population,
 )
 
+from pathlib import Path
+
+
 from ariel.ec.genotypes.tree.tree_genome import TreeGenome
 
 import random
@@ -47,13 +50,14 @@ class Assignment1EA:
             is_maximisation=False, # minimization
             num_steps=STEPS,
             target_population_size=POP_SIZE,
+            output_folder=Path("__data__"), db_file_name="database.db"
         )
 
-    def make_individual(num_modules: int) -> Individual:
+    def make_individual(self) -> Individual:
         """TODO: implement individual generation."""
 
         ind = Individual()
-        genome = random_tree(NUM_MODULES)
+        genome = random_tree(max_modules=NUM_MODULES)
         ind.genotype = genome.to_dict()
 
         ind.tags["ps"] = False
@@ -140,10 +144,8 @@ class Assignment1EA:
 
             k = min(TOURNAMENT_SIZE, len(candidates))
             competitors = [random.choice(candidates) for _ in range(k)]
-            if self.config.is_maximisation:
-                doomed = min(competitors, key=lambda ind: ind.fitness)
-            else:
-                doomed = max(competitors, key=lambda ind: ind.fitness)
+
+            doomed = min(competitors, key=lambda ind: ind.fitness)
 
             doomed.alive = False
             num_alive -= 1
@@ -263,11 +265,8 @@ class Assignment1EA:
             EAOperation(self.reproduction),
             EAOperation(self.evaluate),
             EAOperation(self.survivor_selection_tournament),
-            EASettings(output_folder=Path("__data__"), db_file_name="database.db")
         ]
         
-        
-
         ea = EA(
             population,
             operations=ops,
@@ -276,42 +275,4 @@ class Assignment1EA:
         )
         ea.run()
 
-        self.plot_best_individual(ea.get_solution("best", only_alive=False), "__data__/best_individual.png")
         return ea.get_solution("best", only_alive=False)
-
-    def plot_best_individual(self, individual: Individual, filename: str) -> None:
-        """Plot the best individual in the population."""
-        genome = TreeGenome.from_dict(individual.genotype)
-        graph_genome = genome.to_networkx()
-
-        import matplotlib.pyplot as plt
-
-        plt.figure(figsize=(8, 6))
-        pos = nx.spring_layout(graph_genome)
-        nx.draw(graph_genome, pos, with_labels=True, node_color='lightblue', edge_color='gray', node_size=2000, font_size=10)
-        plt.title("Best Individual's Graph Representation")
-        plt.savefig(filename)
-        plt.close()
-
-        from ariel.ec import Archive
-
-        db_path = "__data__/my_run/database.db"
-        archive = Archive(db_path)
-
-        best = archive.best_individual(fitness_mode="min")
-        print(best.fitness_, best.id)
-
-        import sqlite3
-        import pandas as pd
-
-        conn = sqlite3.connect(db_path)
-        df = pd.read_sql_query(
-            "SELECT time_of_birth, fitness_ FROM individual WHERE fitness_ IS NOT NULL",
-            conn,
-        )
-        plt.plot(df["time_of_birth"], df["fitness_"])
-        plt.xlabel("Generation")
-        plt.ylabel("Fitness")
-        plt.title("EA fitness over time")
-        plt.show()
-    
