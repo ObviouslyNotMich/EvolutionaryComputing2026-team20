@@ -13,7 +13,7 @@ import sqlite3
 import tempfile
 import warnings
 
-import json5
+import json
 import numpy as np
 import pandas as pd
 import panel as pn
@@ -349,6 +349,41 @@ chk_show_individual = pn.widgets.Checkbox(
 # ─────────────────────────────────────────────────────────────────────────────
 # Core computation  (runs once per load)
 # ─────────────────────────────────────────────────────────────────────────────
+_NODE_TYPES = ("CORE", "BRICK", "HINGE", "NONE")
+_ROTATIONS = ("DEG_0", "DEG_45", "DEG_90", "DEG_180", "DEG_270")
+_FACES = ("FRONT", "BACK", "LEFT", "RIGHT", "TOP", "BOTTOM")
+
+
+def _geno_vec(geno) -> np.ndarray:
+    """Return a fixed-length float vector for a genotype.
+
+    Flat numeric genotypes pass through. Graph genotypes
+    (``{"nodes": ..., "edges": ...}``) are summarised as counts, since
+    diversity/novelty need a fixed-width Euclidean space.
+
+    Returns
+    -------
+    np.ndarray
+    """
+    if not isinstance(geno, dict) or "nodes" not in geno:
+        return np.asarray(geno, dtype=float)
+
+    nodes = geno.get("nodes", {}).values()
+    edges = geno.get("edges", [])
+    types = [n.get("type") for n in nodes]
+    rots = [n.get("rotation") for n in nodes]
+    faces = [e.get("face") for e in edges]
+    # ponytail: count-based embedding ignores topology; swap in a graph
+    # kernel / GED if two different shapes with equal part counts must differ.
+    return np.asarray(
+        [len(types), len(edges)]
+        + [types.count(t) for t in _NODE_TYPES]
+        + [rots.count(r) for r in _ROTATIONS]
+        + [faces.count(f) for f in _FACES],
+        dtype=float,
+    )
+
+
 def _compute_stats(df: pd.DataFrame) -> dict:
     """Pre-compute all per-generation statistics from the database."""
     if df["time_of_death"].isna().any():
@@ -400,9 +435,7 @@ def _compute_stats(df: pd.DataFrame) -> dict:
                 lst.append(float("nan"))
 
         # ── Genotype matrix ──────────────────────────────────────────────────
-        G = np.array([
-            np.asarray(id_to_geno[i], dtype=float) for i in alive_ids
-        ])
+        G = np.array([_geno_vec(id_to_geno[i]) for i in alive_ids])
         n = len(alive_ids)
 
         if n > 1:
@@ -482,12 +515,8 @@ def _compute_novelty(df: pd.DataFrame, window: int) -> dict:
             nov_max.append(float("nan"))
             continue
 
-        g_cur = np.array([
-            np.asarray(id_to_geno[i], dtype=float) for i in cur_ids
-        ])
-        g_arch = np.array([
-            np.asarray(id_to_geno[i], dtype=float) for i in arch_ids
-        ])
+        g_cur = np.array([_geno_vec(id_to_geno[i]) for i in cur_ids])
+        g_arch = np.array([_geno_vec(id_to_geno[i]) for i in arch_ids])
 
         # Distance matrix: (n_cur, n_arch)
         diff = g_cur[:, None, :] - g_arch[None, :, :]  # (n_cur, n_arch, dims)
@@ -703,7 +732,7 @@ def _on_load(event : None) -> None:
         finally:
             conn.close()
         pathlib.Path(tmp_path).unlink()
-        df["genotype_"] = df["genotype_"].apply(json5.loads)
+        df["genotype_"] = df["genotype_"].apply(json.loads)
 
         label = _unique_label(_file_sel.filename or "database")
         stats = _compute_stats(df)

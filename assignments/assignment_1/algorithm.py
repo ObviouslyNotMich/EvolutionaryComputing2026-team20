@@ -31,13 +31,13 @@ import numpy as np
 from ariel.ec.genotypes.tree.operators import random_tree, mutate_subtree_replacement, crossover_subtree
 from ariel.ec.genotypes.tree.validation import validate_genome_dict
 
-NUM_OF_MODULES: int = 20  # module budget per evolved body
+NUM_OF_MODULES: int = 5  # module budget per evolved body
 
 SEED = 42
 RNG = np.random.default_rng(SEED)
 
-STEPS = 75
-NUM_MODULES = 20
+STEPS = 5
+NUM_MODULES = 5
 P_MUTATION = 0.05
 POP_SIZE = 100
 TOURNAMENT_SIZE = 4
