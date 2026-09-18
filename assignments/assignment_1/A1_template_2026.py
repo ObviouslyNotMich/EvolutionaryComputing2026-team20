@@ -31,6 +31,8 @@ import numpy as np
 import torch
 from mujoco import viewer
 
+from algorithm import Assignment1EA
+
 # Local scripts
 from tree_edit_distance import (
     distances_to_targets,
@@ -55,6 +57,20 @@ from ariel.simulation.environments import SimpleFlatWorld
 from ariel.utils.renderers import single_frame_renderer, video_renderer
 from ariel.utils.video_recorder import VideoRecorder
 
+
+import numpy as np
+from ariel.ec.genotypes.tree.operators import random_tree, mutate_subtree_replacement, crossover_subtree
+from ariel.ec.genotypes.tree.validation import validate_genome_dict
+
+from ariel.ec import (
+    EA,
+    EAOperation,
+    Individual,
+    Population,
+)
+
+from ariel.ec.genotypes.tree import TreeGenome
+
 # Type aliases
 type GenotypeTypes = Literal["nde", "tree"]
 type ViewerTypes = Literal["launcher", "video", "frame", "none"]
@@ -67,7 +83,7 @@ type ViewerTypes = Literal["launcher", "video", "frame", "none"]
 # network's weight initialisation uses torch's own RNG, entirely separate from
 # numpy/random. If you're using "nde", seed all THREE or your runs will not be
 # reproducible across separate script runs, even with the same seed value.
-SEED = 42
+SEED = 64
 RNG = np.random.default_rng(SEED)
 random.seed(SEED)
 torch.manual_seed(SEED)
@@ -83,7 +99,7 @@ DATA.mkdir(parents=True, exist_ok=True)
 TARGET_DIR: Path = HERE / "target_bodies"  # the bodies you must approach
 NUM_OF_MODULES: int = 20  # module budget per evolved body
 GENOTYPE: GenotypeTypes = "tree"  # "nde" | "tree" 
-MODE: ViewerTypes = "frame"  # see show_body() for the options
+MODE: ViewerTypes = "launcher"  # see show_body() for the options
 SPAWN_POS: list[float] = [0.0, 0.0, 0.1]
 
 
@@ -345,19 +361,51 @@ def main() -> None:
     ]
     console.log(f"target spread : mean pairwise distance {np.mean(spread):.2f}")
 
+    ea = Assignment1EA(targets)
+
+    best_ind = ea.evolve()
+
     # --- One random body --------------------------------------------------- #
-    body = random_body(GENOTYPE, NUM_OF_MODULES)
-    fitness = fitness_function(body, targets)
+    # body = random_body(GENOTYPE, NUM_OF_MODULES)
+    # fitness = fitness_function(body, targets)
 
-    console.log("")
-    console.log(f"random body   : {body.number_of_nodes()} modules")
-    console.log(
-        "per-target    : "
-        + ", ".join(f"{d:.1f}" for d in distances_to_targets(body, targets)),
-    )
-    console.log(f"fitness       : {fitness:.4f}   (lower is better)")
+    # initial = Population([make_individual(NUM_OF_MODULES) for _ in range(50)])
+    # initial = evaluate(initial)
 
-    show_body(body, MODE, file_name=f"random_{GENOTYPE}")
+    # ops: list[EAOperation] = [
+    #     EAOperation(parent_selection),
+    #     EAOperation(crossover),
+    #     EAOperation(mutate),
+    #     EAOperation(evaluate),
+    #     EAOperation(survivor_selection),
+    # ]
+
+    # ea = EA(initial, ops, num_steps=20, is_maximisation=False)# Fitness needs to be lower
+    # ea.run()
+
+    
+    # best_ind = ea.get_solution('best', only_alive=False)
+
+
+
+    console.log("--- Results ---")
+    console.log(f"best = {best_ind}")
+
+    show_body(TreeGenome.from_dict(best_ind.genotype).to_networkx(), MODE)
+
+
+    # console.log(f"median = {ea.get_solution('median', only_alive=False)}")
+    # console.log(f"worst = {ea.get_solution('worst', only_alive=False)}")
+
+    # console.log("")
+    # console.log(f"random body   : {body.number_of_nodes()} modules")
+    # console.log(
+    #     "per-target    : "
+    #     + ", ".join(f"{d:.1f}" for d in distances_to_targets(body, targets)),
+    # )
+    # console.log(f"fitness       : {fitness:.4f}   (lower is better)")
+
+    # show_body(body, MODE, file_name=f"random_{GENOTYPE}")
 
 
 if __name__ == "__main__":
