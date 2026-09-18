@@ -20,6 +20,7 @@ from ariel.ec.genotypes.tree.operators import (
 # Local scripts
 from tree_edit_distance import (
     mean_plus_std_tree_edit_distance,
+    tree_edit_distance,
 )
 
 import networkx as nx
@@ -91,18 +92,14 @@ class Assignment1EA:
         return new
 
 
-    def crossover(self, parent1: Individual, parent2: Individual) -> TreeGenome:
+    def crossover(self, parent1: Individual, parent2: Individual) -> tuple[TreeGenome, TreeGenome]:
 
         g1 = TreeGenome.from_dict(parent1.genotype)
         g2 = TreeGenome.from_dict(parent2.genotype)
 
-        child1, child2 = crossover_subtree(g1,g2)
+        g1_child, g2_child = crossover_subtree(g1,g2)
 
-        chosen = child1 if RNG.random() < 0.5 else child2
-        child1.genotype = child1.to_dict()
-        child2.genotype = child2.to_dict()
-
-        return chosen
+        return g1_child, g2_child
 
 
     def reproduction(self, population: Population) -> Population:
@@ -112,25 +109,36 @@ class Assignment1EA:
         offspring: list[Individual] = []
 
         # Define a new pool with twice the size of the target
-        target_pool = self.config.target_population_size*2 
+        target_pool = self.config.target_population_size * 2
 
         while len(population) + len(offspring) < target_pool:
             # Always do crossover
             # if P_CROSSOVER > RNG.random():
             p1, p2 = random.sample(parents, 2) # Take two parents randomly
-            c_morph = self.crossover(p1, p2)
-
-            if P_MUTATION > RNG.random():
-                parent = random.choice(parents)
-                c_morph = self.mutation(TreeGenome.from_dict(parent.genotype))
-
-            ind = Individual()
-            ind.genotype = c_morph.to_dict()
-            ind.tags["ps"] = False # no parent selection
-            ind.tags["valid"] = True
-            offspring.append(ind)
-
+            c1, c2 = self.crossover(p1, p2)
+            
+            # Make children
+            child1 = Individual()
+            child1.genotype = c1.to_dict()
+            child1.tags["ps"] = False # no parent selection
+            child1.tags["valid"] = True
+            offspring.append(child1)
+            
+            child2 = Individual()
+            child2.genotype = c2.to_dict()
+            child2.tags["ps"] = False # no parent selection
+            child2.tags["valid"] = True
+            offspring.append(child2)
+            
+        # Add offspring to population
         population.extend(offspring)
+            
+        for ind in population:
+            if P_MUTATION > RNG.random():
+                g_mutated = self.mutation(TreeGenome.from_dict(ind.genotype))
+
+                ind.genotype = g_mutated.to_dict()
+
         return population
 
 
@@ -197,3 +205,4 @@ class Assignment1EA:
         ea.run()
 
         return ea.get_solution("best", only_alive=False)
+    
