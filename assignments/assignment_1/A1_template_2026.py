@@ -83,10 +83,10 @@ type ViewerTypes = Literal["launcher", "video", "frame", "none"]
 # network's weight initialisation uses torch's own RNG, entirely separate from
 # numpy/random. If you're using "nde", seed all THREE or your runs will not be
 # reproducible across separate script runs, even with the same seed value.
-SEED = 64
-RNG = np.random.default_rng(SEED)
-random.seed(SEED)
-torch.manual_seed(SEED)
+# SEED = 64
+# RNG = np.random.default_rng(SEED)
+# random.seed(SEED)
+# torch.manual_seed(SEED)
 
 # --- DATA SETUP --- #
 SCRIPT_NAME = Path(__file__).stem
