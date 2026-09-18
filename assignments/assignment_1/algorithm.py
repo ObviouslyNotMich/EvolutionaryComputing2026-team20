@@ -43,15 +43,9 @@ POP_SIZE = 200
 TOURNAMENT_SIZE = 4
 NUM_ELITES = 1
 
-# Grow-then-cull: population multiplies by GROWTH each generation and is
-# culled back to POP_SIZE every CULL_EVERY generations.
-GROWTH = 3.0
-CULL_EVERY = 3
-
 class Assignment1EA:
     def __init__(self, targets) -> None:
         self.targets = targets
-        self.generation = 0
         self.config = EASettings(
             is_maximisation=False, # minimization
             num_steps=STEPS,
@@ -202,8 +196,10 @@ class Assignment1EA:
 
         # Grow relative to who is actually alive now, not a fixed target,
         # so the population can expand generation over generation.
-        target_pool = int(len(population.alive) * GROWTH)
-
+        # target_pool = int(len(population.alive) * GROWTH)
+        
+        target_pool = self.config.target_population_size * 2
+        
         while len(population) + len(offspring) < target_pool:
             # Always do crossover
             # if P_CROSSOVER > RNG.random():
@@ -269,6 +265,44 @@ class Assignment1EA:
             ind.requires_eval = False
 
         return population
+    
+    
+    def random_search(self, population: Population) -> Population:
+        """Random search: generate new individuals and evaluate them."""
+        # Generate new individuals
+        new_individuals = [
+            self.make_individual() for _ in range(self.config.target_population_size)
+        ]
+        
+        new_population = Population(new_individuals)
+        
+
+        return new_population
+    
+    
+    def random_evolve(self) -> Individual | None:
+        """Run the evolutionary algorithm with random search."""
+        population = Population([
+            self.make_individual() for _ in range(self.config.target_population_size)
+        ])
+
+        # initial eval
+        population = self.evaluate(population)
+
+        ops = [
+            EAOperation(self.evaluate),
+            EAOperation(self.random_search),
+        ]
+        
+        ea = EA(
+            population,
+            operations=ops,
+            num_steps=STEPS,
+            is_maximisation=self.config.is_maximisation,
+        )
+        ea.run()
+
+        return ea.get_solution("best", only_alive=False)
 
 
     def evolve(self) -> Individual | None:
@@ -284,7 +318,7 @@ class Assignment1EA:
             EAOperation(self.parent_selection_tournament),
             EAOperation(self.reproduction),
             EAOperation(self.evaluate),
-            EAOperation(self.survivor_selection_periodic),
+            EAOperation(self.survivor_selection_tournament),
         ]
         
         ea = EA(
