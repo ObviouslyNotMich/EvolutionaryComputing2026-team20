@@ -99,7 +99,7 @@ DATA.mkdir(parents=True, exist_ok=True)
 TARGET_DIR: Path = HERE / "target_bodies"  # the bodies you must approach
 NUM_OF_MODULES: int = 20  # module budget per evolved body
 GENOTYPE: GenotypeTypes = "tree"  # "nde" | "tree" 
-MODE: ViewerTypes = "launcher"  # see show_body() for the options
+MODE: ViewerTypes = "frame"  # see show_body() for the options
 SPAWN_POS: list[float] = [0.0, 0.0, 0.1]
 
 

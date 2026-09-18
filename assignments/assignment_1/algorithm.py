@@ -36,10 +36,10 @@ NUM_OF_MODULES: int = 5  # module budget per evolved body
 SEED = 42
 RNG = np.random.default_rng(SEED)
 
-STEPS = 50
+STEPS = 100
 NUM_MODULES = 20
-P_MUTATION = 0.05
-POP_SIZE = 200
+P_MUTATION = 0.1
+POP_SIZE = 100
 TOURNAMENT_SIZE = 4
 NUM_ELITES = 1
 
@@ -65,21 +65,21 @@ class Assignment1EA:
         
         return ind
     
-    def parent_selection(self, population: Population) -> Population:
+    # def parent_selection(self, population: Population) -> Population:
         
-        for ind in population:
-            # clear last generation's parent flags 
-            # because tags persist accross generations
-            ind.tags = {"ps" : False}
+    #     for ind in population:
+    #         # clear last generation's parent flags 
+    #         # because tags persist accross generations
+    #         ind.tags = {"ps" : False}
         
-        population = population.sort(sort="min", attribute="fitness_") #get top 50%
-        cutoff = len(population) // 2
+    #     population = population.sort(sort="min", attribute="fitness_") #get top 50%
+    #     cutoff = len(population) // 2
 
-        # Give ps tag to all 'selected' individuals
-        for i, ind in enumerate(population):
-            ind.tags["ps"] = i < cutoff
+    #     # Give ps tag to all 'selected' individuals
+    #     for i, ind in enumerate(population):
+    #         ind.tags["ps"] = i < cutoff
 
-        return population
+    #     return population
     
     def parent_selection_tournament(self, population: Population) -> Population:
         """
@@ -99,10 +99,10 @@ class Assignment1EA:
             return population
 
         # Two parents per child, one child per population slot
-        num_parents = 2 * self.config.target_population_size
+        num_parents = self.config.target_population_size
 
         for _ in range(num_parents):
-            competitors = [random.choice(candidates) for _ in range(TOURNAMENT_SIZE)]
+            competitors = [RNG.choice(candidates, replace=False) for _ in range(TOURNAMENT_SIZE)]
 
             winner = min(competitors, key=lambda ind: ind.fitness)
 
@@ -113,15 +113,15 @@ class Assignment1EA:
         return population
     
 
-    def survivor_selection(self, population: Population) -> Population:
+    # def survivor_selection(self, population: Population) -> Population:
         
-        population = population.sort(sort="min", attribute="fitness_") #get top 50%
-        survivors = population[: self.config.target_population_size]
-        for ind in population:
-            if ind not in survivors:
-                ind.alive = False
+    #     population = population.sort(sort="min", attribute="fitness_") #get top 50%
+    #     survivors = population[: self.config.target_population_size]
+    #     for ind in population:
+    #         if ind not in survivors:
+    #             ind.alive = False
 
-        return population
+    #     return population
 
     def survivor_selection_tournament(self, population: Population) -> Population:
 
@@ -133,7 +133,6 @@ class Assignment1EA:
         
         ranked = alive.sort(sort="min", attribute="fitness_")
         
-        
         elite_ids = {id(ind) for ind in ranked[:NUM_ELITES]}  # Keep the best individuals alive
 
         num_alive = len(alive)
@@ -143,7 +142,7 @@ class Assignment1EA:
                 break
 
             k = min(TOURNAMENT_SIZE, len(candidates))
-            competitors = [random.choice(candidates) for _ in range(k)]
+            competitors = [RNG.choice(candidates, replace=False) for _ in range(k)]
 
             doomed = max(competitors, key=lambda ind: ind.fitness)
 
@@ -151,20 +150,6 @@ class Assignment1EA:
             num_alive -= 1
 
         return population
-
-
-    def survivor_selection_periodic(self, population: Population) -> Population:
-        self.generation += 1
-
-        # Unevaluated individuals never survive, regardless of the cull cycle.
-        for kid in population.alive:
-            if kid.fitness_ is None:
-                kid.alive = False
-
-        if self.generation % CULL_EVERY:
-            return population  # growth generation: everyone evaluated stays
-
-        return self.survivor_selection_tournament(population)
 
 
     def mutation(self, genome: TreeGenome) -> TreeGenome:
@@ -219,15 +204,15 @@ class Assignment1EA:
             child2.tags["valid"] = True
             offspring.append(child2)
             
-        # Add offspring to population
-        population.extend(offspring)
-            
-        for ind in population:
+        for ind in offspring:
             if P_MUTATION > RNG.random():
                 g_mutated = self.mutation(TreeGenome.from_dict(ind.genotype))
 
                 ind.genotype = g_mutated.to_dict()
-
+                
+        # Add offspring to population
+        population.extend(offspring)
+        
         return population
 
     def fitness_function(self,
