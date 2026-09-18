@@ -29,8 +29,35 @@ def evaluate(population: Population) -> Population:
     return population
 
 @EAOperation
-def parent_selection(population: Population) -> Population:
-    """TODO: implement parent selection. """
+def parent_selection(population: Population, tournament_size = 5) -> Population:
+    """
+    Tournament Selection.
+    tournament_size = 5 chosen because of example ea_ackley in docs
+    """
+    for ind in population:
+        # clear last generation's parent flags 
+        # because tags persist accross generations
+        ind.tags = {"ps" : False, "ps_count":0}
+
+    # Only evaluated individuals can become parents
+    candidates = [ind for ind in population.alive if ind.fitness_ is not None]
+
+    # We need at least two parents for a child
+    if len(candidates) < 2:
+        return population
+
+    # Two parents per child, one child per population slot
+    num_parents = 2 * config.target_population_size
+
+    for _ in range(num_parents):
+        competitors = [random.choice(candidates) for _ in range(tournament_size)]
+
+        winner = min(competitors, key=lambda ind: ind.fitness)
+
+        winner.tags = {
+            "ps": True,
+            "ps_count": int(winner.tags.get("ps_count", 0)) + 1,
+        }
 
     return population
 
@@ -76,7 +103,42 @@ def mutate(population: Population, probability: float) -> Population:
     return population
 
 @EAOperation
-def survivor_selection(population: Population) -> Population:
-    """"TODO: implement survivor selection"""
-    
+def survivor_selection(
+    population: Population,
+    tournament_size: int = 5,
+    num_elites: int = 1
+    ) -> Population:
+
+    for ind in population.alive:
+        if ind.fitness_ is None:
+            ind.alive = False
+
+    alive = population.alive.to_list()
+    ranked = sorted(
+        alive,
+        key=lambda ind: ind.fitness,
+        reverse=config.is_maximisation,
+    )
+    elite_ids = {id(ind) for ind in ranked[:num_elites]}
+
+    num_alive = len(alive)
+    while num_alive > config.target_population_size:
+        candidates = [ind for ind in population.alive if id(ind) not in elite_ids]
+        if not candidates:
+            break
+
+        k = min(tournament_size, len(candidates))
+        competitors = [random.choice(candidates) for _ in range(k)]
+        if config.is_maximisation:
+            doomed = min(competitors, key=lambda ind: ind.fitness)
+        else:
+            doomed = max(competitors, key=lambda ind: ind.fitness)
+
+        doomed.alive = False
+        num_alive -= 1
+
     return population
+
+
+
+
