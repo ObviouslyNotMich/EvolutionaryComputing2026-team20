@@ -163,9 +163,9 @@ class Assignment1EA:
         self.generation += 1
 
         # Unevaluated individuals never survive, regardless of the cull cycle.
-        for ind in population.alive:
-            if ind.fitness_ is None:
-                ind.alive = False
+        for kid in population.alive:
+            if kid.fitness_ is None:
+                kid.alive = False
 
         if self.generation % CULL_EVERY:
             return population  # growth generation: everyone evaluated stays
