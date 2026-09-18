@@ -262,12 +262,8 @@ class Assignment1EA:
             EAOperation(self.parent_selection_tournament),
             EAOperation(self.reproduction),
             EAOperation(self.evaluate),
-<<<<<<< HEAD
             EAOperation(self.survivor_selection_tournament),
-=======
-            EAOperation(self.survivor_selection),
             EASettings(output_folder=Path("__data__"), db_file_name="database.db")
->>>>>>> 3ea3d20031acbc8fc6f3348ec4f7638562963439
         ]
         
         
@@ -279,6 +275,8 @@ class Assignment1EA:
             is_maximisation=self.config.is_maximisation,
         )
         ea.run()
+
+        self.plot_best_individual(ea.get_solution("best", only_alive=False), "__data__/best_individual.png")
         return ea.get_solution("best", only_alive=False)
 
     def plot_best_individual(self, individual: Individual, filename: str) -> None:
