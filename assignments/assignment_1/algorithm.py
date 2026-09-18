@@ -226,6 +226,7 @@ class Assignment1EA:
             EAOperation(self.reproduction),
             EAOperation(self.evaluate),
             EAOperation(self.survivor_selection),
+            EAOperation(self.plot_best_individual, filename="best_individual.png")
         ]
 
         ea = EA(
@@ -237,4 +238,18 @@ class Assignment1EA:
         ea.run()
 
         return ea.get_solution("best", only_alive=False)
+
+    def plot_best_individual(self, individual: Individual, filename: str) -> None:
+        """Plot the best individual in the population."""
+        genome = TreeGenome.from_dict(individual.genotype)
+        graph_genome = genome.to_networkx()
+
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(8, 6))
+        pos = nx.spring_layout(graph_genome)
+        nx.draw(graph_genome, pos, with_labels=True, node_color='lightblue', edge_color='gray', node_size=2000, font_size=10)
+        plt.title("Best Individual's Graph Representation")
+        plt.savefig(filename)
+        plt.close()
     
