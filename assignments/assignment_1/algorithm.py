@@ -20,7 +20,6 @@ from ariel.ec.genotypes.tree.operators import (
 # Local scripts
 from tree_edit_distance import (
     mean_plus_std_tree_edit_distance,
-    tree_edit_distance,
 )
 
 import networkx as nx
@@ -34,10 +33,12 @@ NUM_OF_MODULES: int = 20  # module budget per evolved body
 SEED = 42
 RNG = np.random.default_rng(SEED)
 
-STEPS = 80
+STEPS = 75
 NUM_MODULES = 20
-P_MUTATION = 0.5
-POP_SIZE = 60
+P_MUTATION = 0.05
+POP_SIZE = 100
+TOURNAMENT_SIZE = 4
+NUM_ELITES = 1
 
 class Assignment1EA:
     def __init__(self, targets) -> None:
@@ -59,8 +60,14 @@ class Assignment1EA:
         ind.tags["valid"] = True
         
         return ind
-
+    
     def parent_selection(self, population: Population) -> Population:
+        
+        for ind in population:
+            # clear last generation's parent flags 
+            # because tags persist accross generations
+            ind.tags = {"ps" : False}
+        
         population = population.sort(sort="min", attribute="fitness_") #get top 50%
         cutoff = len(population) // 2
 
@@ -69,8 +76,41 @@ class Assignment1EA:
             ind.tags["ps"] = i < cutoff
 
         return population
+    
+    def parent_selection_tournament(self, population: Population) -> Population:
+        """
+        Tournament Selection.
+        tournament_size = 5 chosen because of example ea_ackley in docs
+        """
+        for ind in population:
+            # clear last generation's parent flags 
+            # because tags persist accross generations
+            ind.tags = {"ps" : False}
 
-    def survivor_selection_old(self, population: Population) -> Population:
+        # Only evaluated individuals can become parents
+        candidates = [ind for ind in population.alive if ind.fitness_ is not None]
+
+        # We need at least two parents for a child
+        if len(candidates) < 2:
+            return population
+
+        # Two parents per child, one child per population slot
+        num_parents = 2 * self.config.target_population_size
+
+        for _ in range(num_parents):
+            competitors = [random.choice(candidates) for _ in range(TOURNAMENT_SIZE)]
+
+            winner = min(competitors, key=lambda ind: ind.fitness)
+
+            winner.tags = {
+                "ps": True,
+            }
+        
+        return population
+    
+
+    def survivor_selection(self, population: Population) -> Population:
+        
         population = population.sort(sort="min", attribute="fitness_") #get top 50%
         survivors = population[: self.config.target_population_size]
         for ind in population:
@@ -79,29 +119,28 @@ class Assignment1EA:
 
         return population
 
-    def survivor_selection(self, population: Population, tournament_size: int = 5,num_elites: int = 1) -> Population:
+    def survivor_selection_tournament(self, population: Population) -> Population:
 
         for ind in population.alive:
             if ind.fitness_ is None:
                 ind.alive = False
 
-        alive = population.alive.to_list()
-        ranked = sorted(
-            alive,
-            key=lambda ind: ind.fitness,
-            reverse=config.is_maximisation,
-        )
-        elite_ids = {id(ind) for ind in ranked[:num_elites]}
+        alive = population.alive
+        
+        ranked = alive.sort(sort="min", attribute="fitness_")
+        
+        
+        elite_ids = {id(ind) for ind in ranked[:NUM_ELITES]}  # Keep the best individuals alive
 
         num_alive = len(alive)
-        while num_alive > config.target_population_size:
+        while num_alive > self.config.target_population_size:
             candidates = [ind for ind in population.alive if id(ind) not in elite_ids]
             if not candidates:
                 break
 
-            k = min(tournament_size, len(candidates))
+            k = min(TOURNAMENT_SIZE, len(candidates))
             competitors = [random.choice(candidates) for _ in range(k)]
-            if config.is_maximisation:
+            if self.config.is_maximisation:
                 doomed = min(competitors, key=lambda ind: ind.fitness)
             else:
                 doomed = max(competitors, key=lambda ind: ind.fitness)
@@ -173,8 +212,6 @@ class Assignment1EA:
 
         return population
 
-
-
     def fitness_function(self,
         body: nx.DiGraph,
         targets: list[nx.DiGraph],
@@ -222,12 +259,13 @@ class Assignment1EA:
         population = self.evaluate(population)
 
         ops = [
-            EAOperation(self.parent_selection),
+            EAOperation(self.parent_selection_tournament),
             EAOperation(self.reproduction),
             EAOperation(self.evaluate),
-            EAOperation(self.survivor_selection),
-            EAOperation(self.plot_best_individual, filename="best_individual.png")
+            EAOperation(self.survivor_selection_tournament),
         ]
+        
+        
 
         ea = EA(
             population,
@@ -236,7 +274,6 @@ class Assignment1EA:
             is_maximisation=self.config.is_maximisation,
         )
         ea.run()
-
         return ea.get_solution("best", only_alive=False)
 
     def plot_best_individual(self, individual: Individual, filename: str) -> None:
