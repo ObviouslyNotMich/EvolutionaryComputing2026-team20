@@ -70,12 +70,44 @@ class Assignment1EA:
 
         return population
 
-    def survivor_selection(self, population: Population) -> Population:
+    def survivor_selection_old(self, population: Population) -> Population:
         population = population.sort(sort="min", attribute="fitness_") #get top 50%
         survivors = population[: self.config.target_population_size]
         for ind in population:
             if ind not in survivors:
                 ind.alive = False
+
+        return population
+
+    def survivor_selection(self, population: Population, tournament_size: int = 5,num_elites: int = 1) -> Population:
+
+        for ind in population.alive:
+            if ind.fitness_ is None:
+                ind.alive = False
+
+        alive = population.alive.to_list()
+        ranked = sorted(
+            alive,
+            key=lambda ind: ind.fitness,
+            reverse=config.is_maximisation,
+        )
+        elite_ids = {id(ind) for ind in ranked[:num_elites]}
+
+        num_alive = len(alive)
+        while num_alive > config.target_population_size:
+            candidates = [ind for ind in population.alive if id(ind) not in elite_ids]
+            if not candidates:
+                break
+
+            k = min(tournament_size, len(candidates))
+            competitors = [random.choice(candidates) for _ in range(k)]
+            if config.is_maximisation:
+                doomed = min(competitors, key=lambda ind: ind.fitness)
+            else:
+                doomed = max(competitors, key=lambda ind: ind.fitness)
+
+            doomed.alive = False
+            num_alive -= 1
 
         return population
 
