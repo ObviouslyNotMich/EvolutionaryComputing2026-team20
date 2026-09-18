@@ -226,7 +226,7 @@ class Assignment1EA:
             EAOperation(self.reproduction),
             EAOperation(self.evaluate),
             EAOperation(self.survivor_selection),
-            EAOperation(self.plot_best_individual, filename="best_individual.png")
+            EASettings(output_folder=Path("__data__"), db_file_name="database.db")
         ]
 
         ea = EA(
@@ -252,4 +252,26 @@ class Assignment1EA:
         plt.title("Best Individual's Graph Representation")
         plt.savefig(filename)
         plt.close()
+
+        from ariel.ec import Archive
+
+        db_path = "__data__/my_run/database.db"
+        archive = Archive(db_path)
+
+        best = archive.best_individual(fitness_mode="min")
+        print(best.fitness_, best.id)
+
+        import sqlite3
+        import pandas as pd
+
+        conn = sqlite3.connect(db_path)
+        df = pd.read_sql_query(
+            "SELECT time_of_birth, fitness_ FROM individual WHERE fitness_ IS NOT NULL",
+            conn,
+        )
+        plt.plot(df["time_of_birth"], df["fitness_"])
+        plt.xlabel("Generation")
+        plt.ylabel("Fitness")
+        plt.title("EA fitness over time")
+        plt.show()
     
