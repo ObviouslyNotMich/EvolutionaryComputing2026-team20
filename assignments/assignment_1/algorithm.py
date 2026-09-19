@@ -32,7 +32,7 @@ import numpy as np
 from ariel.ec.genotypes.tree.operators import random_tree, mutate_subtree_replacement, crossover_subtree
 from ariel.ec.genotypes.tree.validation import validate_genome_dict
 
-SEED = 147
+SEED = 21
 RNG = np.random.default_rng(SEED)
 random.seed(SEED)
 
@@ -42,7 +42,7 @@ GENERATIONS = 100
 POP_SIZE = 75
 
 TOURNAMENT_SIZE = 4
-P_MUTATION = 0.1
+P_MUTATION = 1.0
 
 class Assignment1EA:
     def __init__(self, targets) -> None:
@@ -116,20 +116,19 @@ class Assignment1EA:
 
 
     def mutation(self, genome: TreeGenome) -> TreeGenome:
+        # Headless chicken crossover
 
         # Keeps retrying the mutation, untill it is valid (does not exceed max modules)
-        while(True):
-            new = copy.deepcopy(genome)
+        new = copy.deepcopy(genome)
 
-            # Swap with random subtree.
-            mutate_subtree_replacement(new, max_modules=NUM_MODULES)
-            _prune_invalid_edges(new)
+        # Swap with random subtree.
+        mutate_subtree_replacement(new, max_modules=NUM_MODULES)
+        _prune_invalid_edges(new)
 
-            if len(new.nodes) <= NUM_MODULES:
-                validate_genome_dict(new.to_dict())
-                return new
-            else:
-                continue
+        validate_genome_dict(new.to_dict())
+
+        return new
+ 
 
     def crossover(self, parent1: Individual, parent2: Individual) -> tuple[TreeGenome, TreeGenome]:
 
@@ -145,46 +144,37 @@ class Assignment1EA:
         # Get all the parents selected for reproduction
         parents = [ind for ind in population if ind.tags.get("ps", 0) > 0]
 
-        # print(len(parents))
 
         offspring: list[Individual] = []
 
-        # Grow relative to who is actually alive now, not a fixed target,
-        # so the population can expand generation over generation.
-        
         target_pool = self.config.target_population_size * 2
 
         # Compute weigths for tournament wins, more wins have higher probability
         weights = np.array([ind.tags.get("ps", 0) for ind in parents], dtype=float)
         weights /= weights.sum()
         
+
         while len(population) + len(offspring) < target_pool:
-            # Always do crossover
-            # if P_CROSSOVER > RNG.random():
-            # p1, p2 = random.sample(parents, 2) # Take two parents randomly
-            # Select parents
 
-            # Choose parents with probability weights
-            p1, p2 = RNG.choice(parents, size=2, replace=False, p=weights)
+            c = Individual()
+            c.tags["ps"] = 0 # no parent selection
 
-            c1, c2 = self.crossover(p1, p2)
-            
-            # Make children
-            child1 = Individual()
-            child1.genotype = c1.to_dict()
-            child1.tags["ps"] = 0 # no parent selection
-            offspring.append(child1)
-            
-            child2 = Individual()
-            child2.genotype = c2.to_dict()
-            child2.tags["ps"] = 0 # no parent selection
-            offspring.append(child2)
-            
-        for ind in offspring:
-            if P_MUTATION > RNG.random():
-                g_mutated = self.mutation(TreeGenome.from_dict(ind.genotype))
+            # Choose between 'pure' crossover or headless chicken crossover (mutation)
+            if RNG.random() < P_MUTATION:
+                p = RNG.choice(parents, replace=False, p=weights)
 
-                ind.genotype = g_mutated.to_dict()
+                c_genome = self.mutation(TreeGenome.from_dict(p.genotype))
+                
+            else:
+                p1, p2 = RNG.choice(parents, size=2, replace=False, p=weights)
+
+                c1, c2 = self.crossover(p1, p2)
+
+                # Choose one of the two children, to always return one child per iteration
+                c_genome = c1 if RNG.random() < 0.5 else c2
+
+            c.genotype = c_genome.to_dict()
+            offspring.append(c)
                 
         # Add offspring to population
         population.extend(offspring)
@@ -253,39 +243,28 @@ class Assignment1EA:
 
         return ea.get_solution("best", only_alive=False)
 
-    # def random_search(self, population: Population) -> Population:
-    #     """Random search: generate new individuals and evaluate them."""
-    #     # Generate new individuals
-    #     new_individuals = [
-    #         self.make_individual() for _ in range(self.config.target_population_size)
-    #     ]
+
+    def random_evolve(self) -> Individual | None:
+        """Run the evolutionary algorithm with random search."""
+        population = Population([
+            self.make_individual() for _ in range(self.config.target_population_size)
+        ])
+
+        # initial eval
+        population = self.evaluate(population)
+
+        ops = [
+            EAOperation(self.evaluate),
+            # EAOperation(self.random_search),
+            
+        ]
         
-    #     new_population = Population(new_individuals)
-        
+        ea = EA(
+            population,
+            operations=ops,
+            num_steps=self.config.num_steps,
+            is_maximisation=self.config.is_maximisation,
+        )
+        ea.run()
 
-    #     return new_population
-    
-    
-    # def random_evolve(self) -> Individual | None:
-    #     """Run the evolutionary algorithm with random search."""
-    #     population = Population([
-    #         self.make_individual() for _ in range(self.config.target_population_size)
-    #     ])
-
-    #     # initial eval
-    #     population = self.evaluate(population)
-
-    #     ops = [
-    #         EAOperation(self.evaluate),
-    #         EAOperation(self.random_search),
-    #     ]
-        
-    #     ea = EA(
-    #         population,
-    #         operations=ops,
-    #         num_steps=STEPS,
-    #         is_maximisation=self.config.is_maximisation,
-    #     )
-    #     ea.run()
-
-    #     return ea.get_solution("best", only_alive=False)
+        return ea.get_solution("best", only_alive=False)
