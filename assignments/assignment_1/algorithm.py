@@ -17,6 +17,7 @@ from ariel.ec.genotypes.tree.operators import (
     crossover_subtree,
     mutate_subtree_replacement,
     random_tree,
+    _prune_invalid_edges,
 )
 
 
@@ -31,23 +32,24 @@ import numpy as np
 from ariel.ec.genotypes.tree.operators import random_tree, mutate_subtree_replacement, crossover_subtree
 from ariel.ec.genotypes.tree.validation import validate_genome_dict
 
-SEED = 42
+SEED = 147
 RNG = np.random.default_rng(SEED)
 random.seed(SEED)
 
-STEPS = 100
 NUM_MODULES = 20
-P_MUTATION = 0.1
-POP_SIZE = 100
+
+GENERATIONS = 100
+POP_SIZE = 75
+
 TOURNAMENT_SIZE = 4
-NUM_ELITES = 1
+P_MUTATION = 0.1
 
 class Assignment1EA:
     def __init__(self, targets) -> None:
         self.targets = targets
         self.config = EASettings(
             is_maximisation=False, # minimization
-            num_steps=STEPS,
+            num_steps=GENERATIONS,
             target_population_size=POP_SIZE,
             output_folder=Path("__data__"), db_file_name="database.db"
         )
@@ -59,26 +61,11 @@ class Assignment1EA:
         genome = random_tree(max_modules=NUM_MODULES)
         ind.genotype = genome.to_dict()
 
-        ind.tags["ps"] = False
-        ind.tags["valid"] = True
+        ind.tags = {"ps" : 0}
+        ind.requires_eval = True
         
         return ind
-    
-    # def parent_selection(self, population: Population) -> Population:
-        
-    #     for ind in population:
-    #         # clear last generation's parent flags 
-    #         # because tags persist accross generations
-    #         ind.tags = {"ps" : False}
-        
-    #     population = population.sort(sort="min", attribute="fitness_") #get top 50%
-    #     cutoff = len(population) // 2
 
-    #     # Give ps tag to all 'selected' individuals
-    #     for i, ind in enumerate(population):
-    #         ind.tags["ps"] = i < cutoff
-
-    #     return population
     
     def parent_selection_tournament(self, population: Population) -> Population:
         """
@@ -87,62 +74,39 @@ class Assignment1EA:
         """
         for ind in population:
             # clear last generation's parent flags 
-            # because tags persist accross generations
-            ind.tags = {"ps" : False}
+            ind.tags = {"ps" : 0}
 
-        # Only evaluated individuals can become parents
-        candidates = [ind for ind in population.alive if ind.fitness_ is not None]
+        # Only evaluated, alive individuals can become parents.
+        candidates = [ind for ind in population.alive if not ind.requires_eval]
 
-        # We need at least two parents for a child
-        if len(candidates) < 2:
-            return population
-
-        # Two parents per child, one child per population slot
+       # Run parent selection as many times as the target population
         num_parents = self.config.target_population_size
 
         for _ in range(num_parents):
-            competitors = [RNG.choice(candidates, replace=False) for _ in range(TOURNAMENT_SIZE)]
+            # Pick an amount of competitors, without replacement
+            competitors = RNG.choice(candidates, size=TOURNAMENT_SIZE, replace=False)
 
             winner = min(competitors, key=lambda ind: ind.fitness)
 
-            winner.tags = {
-                "ps": True,
-            }
+            # Assign selection to winner.
+            winner.tags["ps"] += 1
         
         return population
     
 
-    # def survivor_selection(self, population: Population) -> Population:
-        
-    #     population = population.sort(sort="min", attribute="fitness_") #get top 50%
-    #     survivors = population[: self.config.target_population_size]
-    #     for ind in population:
-    #         if ind not in survivors:
-    #             ind.alive = False
-
-    #     return population
-
     def survivor_selection_tournament(self, population: Population) -> Population:
 
-        for ind in population.alive:
-            if ind.fitness_ is None:
-                ind.alive = False
+        num_alive = len(population.alive)
 
-        alive = population.alive
-        
-        ranked = alive.sort(sort="min", attribute="fitness_")
-        
-        elite_ids = {id(ind) for ind in ranked[:NUM_ELITES]}  # Keep the best individuals alive
-
-        num_alive = len(alive)
         while num_alive > self.config.target_population_size:
-            candidates = [ind for ind in population.alive if id(ind) not in elite_ids]
-            if not candidates:
-                break
+            candidates = [ind for ind in population.alive if not ind.requires_eval]
 
-            k = min(TOURNAMENT_SIZE, len(candidates))
-            competitors = [RNG.choice(candidates, replace=False) for _ in range(k)]
+            # Make tournament
+            # k = min(TOURNAMENT_SIZE, len(candidates))
 
+            competitors = RNG.choice(candidates, size=TOURNAMENT_SIZE, replace=False)
+
+            # Kill the individual with the highest fitness
             doomed = max(competitors, key=lambda ind: ind.fitness)
 
             doomed.alive = False
@@ -153,14 +117,19 @@ class Assignment1EA:
 
     def mutation(self, genome: TreeGenome) -> TreeGenome:
 
-        new = copy.deepcopy(genome)
+        # Keeps retrying the mutation, untill it is valid (does not exceed max modules)
+        while(True):
+            new = copy.deepcopy(genome)
 
-        # Swap with random subtree.
-        mutate_subtree_replacement(new, max_modules=NUM_MODULES)
-        validate_genome_dict(new.to_dict())
+            # Swap with random subtree.
+            mutate_subtree_replacement(new, max_modules=NUM_MODULES)
+            _prune_invalid_edges(new)
 
-        return new
-
+            if len(new.nodes) <= NUM_MODULES:
+                validate_genome_dict(new.to_dict())
+                return new
+            else:
+                continue
 
     def crossover(self, parent1: Individual, parent2: Individual) -> tuple[TreeGenome, TreeGenome]:
 
@@ -174,33 +143,41 @@ class Assignment1EA:
 
     def reproduction(self, population: Population) -> Population:
         # Get all the parents selected for reproduction
-        parents = [ind for ind in population if ind.tags.get("ps", False)]
+        parents = [ind for ind in population if ind.tags.get("ps", 0) > 0]
+
+        # print(len(parents))
 
         offspring: list[Individual] = []
 
         # Grow relative to who is actually alive now, not a fixed target,
         # so the population can expand generation over generation.
-        # target_pool = int(len(population.alive) * GROWTH)
         
         target_pool = self.config.target_population_size * 2
+
+        # Compute weigths for tournament wins, more wins have higher probability
+        weights = np.array([ind.tags.get("ps", 0) for ind in parents], dtype=float)
+        weights /= weights.sum()
         
         while len(population) + len(offspring) < target_pool:
             # Always do crossover
             # if P_CROSSOVER > RNG.random():
-            p1, p2 = random.sample(parents, 2) # Take two parents randomly
+            # p1, p2 = random.sample(parents, 2) # Take two parents randomly
+            # Select parents
+
+            # Choose parents with probability weights
+            p1, p2 = RNG.choice(parents, size=2, replace=False, p=weights)
+
             c1, c2 = self.crossover(p1, p2)
             
             # Make children
             child1 = Individual()
             child1.genotype = c1.to_dict()
-            child1.tags["ps"] = False # no parent selection
-            child1.tags["valid"] = True
+            child1.tags["ps"] = 0 # no parent selection
             offspring.append(child1)
             
             child2 = Individual()
             child2.genotype = c2.to_dict()
-            child2.tags["ps"] = False # no parent selection
-            child2.tags["valid"] = True
+            child2.tags["ps"] = 0 # no parent selection
             offspring.append(child2)
             
         for ind in offspring:
@@ -234,7 +211,7 @@ class Assignment1EA:
         to_eval = [
             ind
             for ind in population
-            if ind.alive and ind.tags.get("valid") and ind.requires_eval
+            if ind.alive and ind.requires_eval
         ]
 
         if not to_eval:
@@ -249,45 +226,6 @@ class Assignment1EA:
             ind.requires_eval = False
 
         return population
-    
-    
-    def random_search(self, population: Population) -> Population:
-        """Random search: generate new individuals and evaluate them."""
-        # Generate new individuals
-        new_individuals = [
-            self.make_individual() for _ in range(self.config.target_population_size)
-        ]
-        
-        new_population = Population(new_individuals)
-        
-
-        return new_population
-    
-    
-    def random_evolve(self) -> Individual | None:
-        """Run the evolutionary algorithm with random search."""
-        population = Population([
-            self.make_individual() for _ in range(self.config.target_population_size)
-        ])
-
-        # initial eval
-        population = self.evaluate(population)
-
-        ops = [
-            EAOperation(self.evaluate),
-            EAOperation(self.random_search),
-        ]
-        
-        ea = EA(
-            population,
-            operations=ops,
-            num_steps=STEPS,
-            is_maximisation=self.config.is_maximisation,
-        )
-        ea.run()
-
-        return ea.get_solution("best", only_alive=False)
-
 
     def evolve(self) -> Individual | None:
         """Run the evolutionary algorithm."""
@@ -308,9 +246,46 @@ class Assignment1EA:
         ea = EA(
             population,
             operations=ops,
-            num_steps=STEPS,
+            num_steps=self.config.num_steps,
             is_maximisation=self.config.is_maximisation,
         )
         ea.run()
 
         return ea.get_solution("best", only_alive=False)
+
+    # def random_search(self, population: Population) -> Population:
+    #     """Random search: generate new individuals and evaluate them."""
+    #     # Generate new individuals
+    #     new_individuals = [
+    #         self.make_individual() for _ in range(self.config.target_population_size)
+    #     ]
+        
+    #     new_population = Population(new_individuals)
+        
+
+    #     return new_population
+    
+    
+    # def random_evolve(self) -> Individual | None:
+    #     """Run the evolutionary algorithm with random search."""
+    #     population = Population([
+    #         self.make_individual() for _ in range(self.config.target_population_size)
+    #     ])
+
+    #     # initial eval
+    #     population = self.evaluate(population)
+
+    #     ops = [
+    #         EAOperation(self.evaluate),
+    #         EAOperation(self.random_search),
+    #     ]
+        
+    #     ea = EA(
+    #         population,
+    #         operations=ops,
+    #         num_steps=STEPS,
+    #         is_maximisation=self.config.is_maximisation,
+    #     )
+    #     ea.run()
+
+    #     return ea.get_solution("best", only_alive=False)
