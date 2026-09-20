@@ -1,9 +1,19 @@
+"""EC A1 Algorithm code
+This file contains the implementation of our evolutionary algorithm for tree-structured genotypes.
+"""
 
-import networkx as nx
+
 import copy
-import numpy as np
 from pathlib import Path
 import random
+
+import networkx as nx
+import numpy as np
+
+# Local scripts
+from tree_edit_distance import (
+    mean_plus_std_tree_edit_distance,
+)
 
 from ariel.ec import (
     EA,
@@ -12,10 +22,8 @@ from ariel.ec import (
     Individual,
     Population,
 )
-
 from ariel.ec.genotypes.tree.tree_genome import TreeGenome
 from ariel.ec.genotypes.tree.validation import validate_genome_dict
-
 from ariel.ec.genotypes.tree.operators import (
     crossover_subtree,
     mutate_subtree_replacement,
@@ -23,12 +31,7 @@ from ariel.ec.genotypes.tree.operators import (
     _prune_invalid_edges,
 )
 
-
-# Local scripts
-from tree_edit_distance import (
-    mean_plus_std_tree_edit_distance,
-)
-
+# Seeds used: 21, 42, 61, 84, 105, 126
 SEED = 21
 RNG = np.random.default_rng(SEED)
 random.seed(SEED)
@@ -39,6 +42,8 @@ GENERATIONS = 100
 POP_SIZE = 75
 
 TOURNAMENT_SIZE = 4
+
+# Change to 1.0 to for random sub-tree mutation, 0.0 for conventional sub-tree crossover.
 P_MUTATION = 1.0
 
 
@@ -53,7 +58,7 @@ class Assignment1EA:
         )
 
     def make_individual(self) -> Individual:
-        """TODO: implement individual generation."""
+        """Makes an individual with a tree genotype."""
 
         ind = Individual()
         genome = random_tree(max_modules=NUM_MODULES)
@@ -65,10 +70,8 @@ class Assignment1EA:
         return ind
 
     def parent_selection_tournament(self, population: Population) -> Population:
-        """
-        Tournament Selection.
-        tournament_size = 5 chosen because of example ea_ackley in docs
-        """
+        """Tournament selection for selecting parents."""
+
         for ind in population:
             # clear last generation's parent flags
             ind.tags = {"ps": 0}
@@ -92,15 +95,13 @@ class Assignment1EA:
         return population
 
     def survivor_selection_tournament(self, population: Population) -> Population:
+        """Tournament selection for selecting survivors."""
 
         num_alive = len(population.alive)
 
         while num_alive > self.config.target_population_size:
             candidates = [
                 ind for ind in population.alive if not ind.requires_eval]
-
-            # Make tournament
-            # k = min(TOURNAMENT_SIZE, len(candidates))
 
             competitors = RNG.choice(
                 candidates, size=TOURNAMENT_SIZE, replace=False)
@@ -114,9 +115,8 @@ class Assignment1EA:
         return population
 
     def mutation(self, genome: TreeGenome) -> TreeGenome:
-        # Headless chicken crossover
+        """Mutation operation, uses random sub-tree crossover"""
 
-        # Keeps retrying the mutation, untill it is valid (does not exceed max modules)
         new = copy.deepcopy(genome)
 
         # Swap with random subtree.
@@ -128,6 +128,7 @@ class Assignment1EA:
         return new
 
     def crossover(self, parent1: Individual, parent2: Individual) -> tuple[TreeGenome, TreeGenome]:
+        """Crossover operation, uses sub-tree crossover"""
 
         g1 = TreeGenome.from_dict(parent1.genotype)
         g2 = TreeGenome.from_dict(parent2.genotype)
@@ -137,6 +138,11 @@ class Assignment1EA:
         return g1_child, g2_child
 
     def reproduction(self, population: Population) -> Population:
+        """Implements reproduction stage of algorithm
+        
+        Returns the population with additional offspring.
+        """
+
         # Get all the parents selected for reproduction
         parents = [ind for ind in population if ind.tags.get("ps", 0) > 0]
 
@@ -192,6 +198,10 @@ class Assignment1EA:
         return mean_plus_std_tree_edit_distance(body, targets)
 
     def evaluate(self, population: Population) -> Population:
+        """Evaluate the current population using the fitness function. 
+
+        Returns the population with updated fitness values.
+        """
         to_eval = [
             ind
             for ind in population
@@ -218,7 +228,6 @@ class Assignment1EA:
             self.make_individual() for _ in range(self.config.target_population_size)
         ])
 
-        # initial eval
         population = self.evaluate(population)
 
         ops = [
@@ -244,13 +253,10 @@ class Assignment1EA:
             self.make_individual() for _ in range(self.config.target_population_size)
         ])
 
-        # initial eval
         population = self.evaluate(population)
 
         ops = [
             EAOperation(self.evaluate),
-            # EAOperation(self.random_search),
-
         ]
 
         ea = EA(
