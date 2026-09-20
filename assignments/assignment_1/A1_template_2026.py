@@ -365,6 +365,9 @@ def main() -> None:
 
     best_ind = ea.evolve()
 
+    # best_ind = ea.random_evolve()
+    
+
     # --- One random body --------------------------------------------------- #
     # body = random_body(GENOTYPE, NUM_OF_MODULES)
     # fitness = fitness_function(body, targets)
@@ -391,7 +394,7 @@ def main() -> None:
     console.log("--- Results ---")
     console.log(f"best = {best_ind}")
 
-    show_body(TreeGenome.from_dict(best_ind.genotype).to_networkx(), MODE)
+    # show_body(TreeGenome.from_dict(best_ind.genotype).to_networkx(), MODE)
 
 
     # console.log(f"median = {ea.get_solution('median', only_alive=False)}")
