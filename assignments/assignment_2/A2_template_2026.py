@@ -39,10 +39,12 @@ from ariel import console
 from ariel.body_phenotypes.robogen_lite.modules.core import CoreModule
 from ariel.body_phenotypes.robogen_lite.prebuilt_robots.gecko import gecko
 from ariel.ec import set_seed
-from ariel.simulation.environments import SimpleFlatWorld
+from ariel.simulation.environments import SimpleFlatWorld, OlympicArena, CraterTerrainWorld
 from ariel.utils.renderers import single_frame_renderer, video_renderer
 from ariel.utils.runners import simple_runner
 from ariel.utils.video_recorder import VideoRecorder
+
+from ea import EvolutionStategies
 
 # Type aliases
 type ViewerTypes = Literal["launcher", "video", "simple", "frame", "no_control"]
@@ -66,7 +68,7 @@ DATA.mkdir(parents=True, exist_ok=True)
 
 # --- EXPERIMENT CONSTANTS --- #
 SPAWN_POS: list[float] = [0.0, 0.0, 0.1]  # where the robot starts
-TARGET_POSITION: list[float] = [2.0, 0.0, 0.1]  # where it should end up
+TARGET_POSITION: list[float] = [5.5, 0.0, 0.6]  # where it should end up
 SIM_DURATION: float = 15.0  # seconds of simulated time per evaluation
 MODE: ViewerTypes = "launcher"  # see run_experiment() for the options
 
@@ -74,7 +76,7 @@ MODE: ViewerTypes = "launcher"  # see run_experiment() for the options
 # ============================================================================ #
 #  1. THE BODY AND THE WORLD
 # ============================================================================ #
-def build_world() -> SimpleFlatWorld:
+def build_world() -> OlympicArena:
     """Create the environment the robot lives in.
 
     YOU MAY CHANGE THIS. Options include: SimpleFlatWorld, RuggedTerrainWorld,
@@ -85,7 +87,9 @@ def build_world() -> SimpleFlatWorld:
     other, and say in your report which one you used. A controller evolved on
     flat ground and one evolved on rugged terrain are not comparable numbers.
     """
-    return SimpleFlatWorld()
+    world = OlympicArena()
+    
+    return world
 
 
 def build_robot() -> CoreModule:
@@ -324,6 +328,8 @@ def run_experiment(mode: ViewerTypes = MODE) -> float:
 
     # --- Score -------------------------------------------------------------- #
     final_position = get_core_position(data)
+    console.log(f"Final position: {final_position}")
+    
     fitness = fitness_function(initial_position, final_position)
 
     console.log(f"start  : {np.round(initial_position, 3)}")
