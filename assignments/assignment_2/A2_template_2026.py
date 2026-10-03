@@ -134,6 +134,17 @@ def build_robot() -> CoreModule:
 
 # Controller architecture - decide before writing your EA.
 HIDDEN_SIZE: int = 6
+CLOCK_HZ: float = 1.0 # Frequency of the sine/cosine clock inputs
+
+def controller_inputs(data:mj.MjData) -> npt.NDArray[np.float64]:
+    """The robot state + direction to the target + a clock + a constant bias"""
+    # Straight line distance to the target at spawn 5.5m in our case
+    distance_at_spawn = np.linalg.norm(np.subtract(TARGET_POSITION[:2], SPAWN_POS[:2]))
+    # Distance from current position to the target, scaled so it starts at 1 (to avoid saturation region of tanh).
+    distance_to_target = (np.asarray(TARGET_POSITION[:2]) - data.qpos[0:2]) / distance_at_spawn
+    phase = 2 * np.pi * CLOCK_HZ * data.time
+    clock = [np.sin(phase), np.cos(phase)]
+    return np.concatenate([data.qpos, distance_to_target, clock, [1.0]])
 
 
 def nn_controller(
@@ -165,9 +176,7 @@ def nn_controller(
     w1, w2 = weights
 
     # --- INPUTS ---------------------------------------------------------- #
-    # Bare qpos - the simplest choice, not necessarily a good one. See
-    # YOUR JOB below.
-    inputs = data.qpos
+    inputs = controller_inputs(data)
 
     # --- FORWARD PASS ----------------------------------------------------- #
     layer1 = np.tanh(inputs @ w1)
@@ -274,7 +283,7 @@ def run_experiment(mode: ViewerTypes = MODE) -> float:
     # --- Wire up the controller -------------------------------------------- #
     # Sizes are read from the compiled model, never hardcoded - they depend on
     # the body you chose in build_robot().
-    input_size = len(data.qpos)
+    input_size = len(controller_inputs(data))
     output_size = model.nu
 
     weights = make_random_weights(input_size, output_size)
@@ -354,7 +363,7 @@ def main() -> None:
     model = world.spec.compile()
     data = mj.MjData(model)
 
-    input_size = len(data.qpos)
+    input_size = len(controller_inputs(data))
     output_size = model.nu
     num_weights = (
         input_size * HIDDEN_SIZE
