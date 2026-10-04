@@ -37,7 +37,7 @@ from mujoco import viewer
 # Local libraries (ARIEL)
 from ariel import console
 from ariel.body_phenotypes.robogen_lite.modules.core import CoreModule
-from ariel.body_phenotypes.robogen_lite.prebuilt_robots.john_set import spider_8
+from ariel.body_phenotypes.robogen_lite.prebuilt_robots.john_set import spider_8, snake, spider_12
 from ariel.ec import set_seed, EA, EASettings, EAOperation, Individual, Population
 from ariel.simulation.environments import SimpleFlatWorld, OlympicArena, CraterTerrainWorld
 from ariel.utils.renderers import single_frame_renderer, video_renderer
@@ -68,13 +68,13 @@ DATA.mkdir(parents=True, exist_ok=True)
 
 # --- EXPERIMENT CONSTANTS --- #
 SPAWN_POS: list[float] = [0.0, 0.0, 0.1]  # where the robot starts
-TARGET_POSITION: list[float] = [5.5, 0.0, 0.6]  # where it should end up
+TARGET_POSITION: list[float] = [5.0 ,5.0, 0.1] # [5.5, 0.0, 0.6]  # where it should end up
 SIM_DURATION: float = 15.0  # seconds of simulated time per evaluation
 MODE: ViewerTypes = "simple"  # see run_experiment() for the options
 
 # TODO Determine algorithm parameters
-GENERATIONS = 60
-TARGET_SIZE = 10  # Population size
+GENERATIONS = 30
+TARGET_SIZE = 10 # Population size
 OFFSPRING_SIZE = TARGET_SIZE * 7 # 1/7 ratio is recommended or 1/4 ratio.
 
 WEIGHTS_SCALE = 0.5
@@ -88,7 +88,7 @@ SIGMA_BOUNDARY = SIGMA_INIT * 0.1
 # ============================================================================ #
 #  1. THE BODY AND THE WORLD
 # ============================================================================ #
-def build_world() -> OlympicArena:
+def build_world() -> SimpleFlatWorld:
     """Create the environment the robot lives in.
 
     YOU MAY CHANGE THIS. Options include: SimpleFlatWorld, RuggedTerrainWorld,
@@ -99,7 +99,7 @@ def build_world() -> OlympicArena:
     other, and say in your report which one you used. A controller evolved on
     flat ground and one evolved on rugged terrain are not comparable numbers.
     """
-    world = OlympicArena()
+    world = SimpleFlatWorld()
 
     return world
 
@@ -146,6 +146,18 @@ def build_robot() -> CoreModule:
 
 # Controller architecture - decide before writing your EA.
 HIDDEN_SIZE: int = 6
+CLOCK_HZ: float = 1.0 # Frequency of the sine/cosine clock inputs
+
+
+def controller_inputs(data:mj.MjData) -> npt.NDArray[np.float64]:
+    """The robot state + direction to the target + a clock + a constant bias"""
+    # Straight line distance to the target at spawn 5.5m in our case
+    distance_at_spawn = np.linalg.norm(np.subtract(TARGET_POSITION[:3], SPAWN_POS[:3]))
+    # Distance from current position to the target, scaled so it starts at 1 (to avoid saturation region of tanh).
+    distance_to_target = (np.asarray(TARGET_POSITION[:3]) - data.qpos[0:3]) / distance_at_spawn
+    phase = 2 * np.pi * CLOCK_HZ * data.time
+    clock = [np.sin(phase), np.cos(phase)]
+    return np.concatenate([data.qpos, distance_to_target, clock, [1.0]])
 
 
 def nn_controller(
@@ -179,7 +191,7 @@ def nn_controller(
     # --- INPUTS ---------------------------------------------------------- #
     # Bare qpos - the simplest choice, not necessarily a good one. See
     # YOUR JOB below.
-    inputs = data.qpos
+    inputs = controller_inputs(data)
 
     # --- FORWARD PASS ----------------------------------------------------- #
     layer1 = np.tanh(inputs @ w1)
@@ -286,7 +298,7 @@ def run_experiment(weights, mode: ViewerTypes = MODE) -> float:
     # --- Wire up the controller -------------------------------------------- #
     # Sizes are read from the compiled model, never hardcoded - they depend on
     # the body you chose in build_robot().
-    input_size = len(data.qpos)
+    input_size = len(controller_inputs(data))
     output_size = model.nu
 
     # weights = make_random_weights(input_size, output_size)
@@ -375,7 +387,7 @@ def main() -> None:
     model = world.spec.compile()
     data = mj.MjData(model)
 
-    input_size = len(data.qpos)
+    input_size = len(controller_inputs(data))
     output_size = model.nu
     num_weights = (
         input_size * HIDDEN_SIZE
@@ -658,6 +670,10 @@ class EvolutionStategies:
             # print(decoded_weights)
             ind.fitness = run_experiment(decoded_weights, mode="simple")
             ind.requires_eval = False
+
+        best = population.best(sort="min")
+        for ind in best:
+            print(f"Best fitness: {ind.fitness}")
 
         return population
 
