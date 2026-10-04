@@ -38,16 +38,16 @@ from mujoco import viewer
 from ariel import console
 from ariel.body_phenotypes.robogen_lite.modules.core import CoreModule
 from ariel.body_phenotypes.robogen_lite.prebuilt_robots.john_set import spider_8
-from ariel.ec import set_seed
+from ariel.ec import set_seed, EA, EASettings, EAOperation, Individual, Population
 from ariel.simulation.environments import SimpleFlatWorld, OlympicArena, CraterTerrainWorld
 from ariel.utils.renderers import single_frame_renderer, video_renderer
 from ariel.utils.runners import simple_runner
 from ariel.utils.video_recorder import VideoRecorder
-
-from ea import EvolutionStategies
+from ariel.simulation.tasks.targeted_locomotion import fitness_delta_distance, distance_to_target
 
 # Type aliases
-type ViewerTypes = Literal["launcher", "video", "simple", "frame", "no_control"]
+type ViewerTypes = Literal["launcher",
+                           "video", "simple", "frame", "no_control"]
 
 # --- RANDOM GENERATOR SETUP --- #
 # Fix the seed while you are debugging.
@@ -70,7 +70,19 @@ DATA.mkdir(parents=True, exist_ok=True)
 SPAWN_POS: list[float] = [0.0, 0.0, 0.1]  # where the robot starts
 TARGET_POSITION: list[float] = [5.5, 0.0, 0.6]  # where it should end up
 SIM_DURATION: float = 15.0  # seconds of simulated time per evaluation
-MODE: ViewerTypes = "launcher"  # see run_experiment() for the options
+MODE: ViewerTypes = "simple"  # see run_experiment() for the options
+
+# TODO Determine algorithm parameters
+GENERATIONS = 60
+TARGET_SIZE = 10  # Population size
+OFFSPRING_SIZE = TARGET_SIZE * 7 # 1/7 ratio is recommended or 1/4 ratio.
+
+WEIGHTS_SCALE = 0.5
+
+type StepsizeType = Literal["n", "one"]
+SIGMA_MODE: StepsizeType = "n"
+SIGMA_INIT = WEIGHTS_SCALE * 0.2 # 20% of initial scale
+SIGMA_BOUNDARY = SIGMA_INIT * 0.1 
 
 
 # ============================================================================ #
@@ -88,7 +100,7 @@ def build_world() -> OlympicArena:
     flat ground and one evolved on rugged terrain are not comparable numbers.
     """
     world = OlympicArena()
-    
+
     return world
 
 
@@ -239,7 +251,7 @@ def fitness_function(
 # ============================================================================ #
 
 
-def run_experiment(mode: ViewerTypes = MODE) -> float:
+def run_experiment(weights, mode: ViewerTypes = MODE) -> float:
     """Set up the world, run one simulation, and return the fitness.
 
     This is the function your EA calls once per individual, with `mode` set
@@ -277,7 +289,7 @@ def run_experiment(mode: ViewerTypes = MODE) -> float:
     input_size = len(data.qpos)
     output_size = model.nu
 
-    weights = make_random_weights(input_size, output_size)
+    # weights = make_random_weights(input_size, output_size)
 
     def control_callback(m: mj.MjModel, d: mj.MjData) -> None:
         """Compute and apply actions; MuJoCo calls this every physics step."""
@@ -303,6 +315,14 @@ def run_experiment(mode: ViewerTypes = MODE) -> float:
             # Interactive window. Great for seeing what your robot does,
             # useless inside an evolutionary loop.
             viewer.launch(model=model, data=data)
+
+            recorder = VideoRecorder(output_folder=str(DATA / "__videos__"))
+            video_renderer(
+                model,
+                data,
+                duration=SIM_DURATION,
+                video_recorder=recorder,
+            )
         case "simple":
             # Headless. THIS is the one your EA uses.
             simple_runner(model, data, duration=SIM_DURATION)
@@ -328,14 +348,15 @@ def run_experiment(mode: ViewerTypes = MODE) -> float:
 
     # --- Score -------------------------------------------------------------- #
     final_position = get_core_position(data)
-    console.log(f"Final position: {final_position}")
-    
-    fitness = fitness_function(initial_position, final_position)
+    # console.log(f"Final position: {final_position}")
 
-    console.log(f"start  : {np.round(initial_position, 3)}")
-    console.log(f"end    : {np.round(final_position, 3)}")
-    console.log(f"target : {np.round(TARGET_POSITION, 3)}")
-    console.log(f"fitness: {fitness:.4f}   (lower is better)")
+    # fitness = fitness_function(initial_position, final_position)
+    fitness = distance_to_target(final_position, TARGET_POSITION)
+
+    # console.log(f"start  : {np.round(initial_position, 3)}")
+    # console.log(f"end    : {np.round(final_position, 3)}")
+    # console.log(f"target : {np.round(TARGET_POSITION, 3)}")
+    # console.log(f"fitness: {fitness:.4f}   (lower is better)")
 
     return fitness
 
@@ -364,11 +385,17 @@ def main() -> None:
     console.log(f"controller outputs (model.nu)      : {output_size}")
     console.log(f"genotype length (total weights)    : {num_weights}")
 
-    run_experiment(MODE)
+    ea = EvolutionStategies(input_size, output_size, SIGMA_MODE)
 
+    best_ind = ea.evolve()
 
-if __name__ == "__main__":
-    main()
+    console.log("--- Results ---")
+    console.log(f"best = {best_ind}")
+
+    weights = best_ind.genotype.get("weights")
+    decoded_weights = ea.decode_weights(weights)
+    # print(decoded_weights)
+    run_experiment(decoded_weights, mode="launcher")
 
 
 # ============================================================================ #
@@ -408,3 +435,263 @@ if __name__ == "__main__":
 #     everything you compare. Change one thing at a time.
 #
 # ============================================================================ #
+
+
+class EvolutionStategies:
+    def __init__(self, input_size: int, output_size: int, stepsize_type: StepsizeType) -> None:
+
+        self.input_size = input_size
+
+        self.output_size = output_size
+
+        self.stepsize_type = stepsize_type
+
+        self.config = EASettings(
+
+            is_maximisation=False,  # minimize distance probably
+
+            num_steps=GENERATIONS,
+
+            target_population_size=TARGET_SIZE,
+
+            output_folder=Path("__data__"), db_file_name="database.db"
+        )
+
+    def make_individual(self) -> Individual:
+        ind = Individual()
+
+        # Single vector with all weights (NEEDS TO BE CONTSTRUCTED INTO MATRICES AGAIN AFTER)
+        n = self.input_size * HIDDEN_SIZE + self.output_size * HIDDEN_SIZE
+
+        match self.stepsize_type:
+            case "n":
+                n_sigma = n
+            case "one":
+                n_sigma = 1
+
+        # Random weights and predefined sigma
+        ind.genotype = {
+            "weights": RNG.normal(scale=WEIGHTS_SCALE, size=n).tolist(),
+            "stepsizes": np.full(n_sigma, SIGMA_INIT).tolist(),
+        }
+
+        ind.requires_eval = True
+        return ind
+
+    def mutation_onestep(self, ind: Individual) -> Individual:
+        """Gaussian perturbation, used in reproduction()"""
+
+        # Assume n_sigma = 1
+        genome = ind.genotype
+
+        # Get stepsize first
+        weights = np.array(genome.get("weights"))
+        stepsize = np.array(genome.get("stepsizes"))
+
+        tau = 1 / np.sqrt(len(weights))
+        global_noise = RNG.normal()
+
+        # New mutation step size
+        mut_stepsize = stepsize * np.exp(tau * global_noise)
+
+        # Check stepsize does not exceed boundary
+        mut_stepsize = np.maximum(mut_stepsize, SIGMA_BOUNDARY)
+
+        weights = weights + mut_stepsize * RNG.normal(size=len(weights))
+
+        ind.genotype = {
+            "weights": weights.tolist(),
+            "stepsizes": [mut_stepsize],
+        }
+
+        return ind
+
+    def mutation_nstep(self, ind: Individual) -> Individual:
+        """Gaussian perturbation, used in reproduction()"""
+
+        genome = ind.genotype
+
+        # Get stepsize first
+        weights = np.array(genome.get("weights"))
+        stepsizes = np.array(genome.get("stepsizes"))
+
+        assert len(weights) == len(
+            stepsizes), "Weights and stepsizes are not equal in length"
+
+        # See 4.4.2 in Introduction to Evolutionary Computing
+        tau = 1 / np.sqrt(2 * np.sqrt(len(weights)))
+        tau_prime = 1 / np.sqrt(2 * len(weights))
+
+        global_noise = RNG.normal()
+        local_noise = RNG.normal(size=len(stepsizes))
+
+        # Calculate new mutated stepsizes, check for boundary
+        stepsizes = stepsizes * \
+            np.exp(tau_prime * global_noise + tau * local_noise)
+        stepsizes = np.maximum(stepsizes, SIGMA_BOUNDARY)
+
+        # Mutate weights with new stepsizes
+        weights = weights + stepsizes * RNG.normal(size=len(weights))
+
+        # Assign back to individual
+        ind.genotype = {
+            "weights": weights.tolist(),
+            "stepsizes": stepsizes.tolist(),
+        }
+
+        return ind
+
+    def recombination(self, population: Population) -> Individual:
+        """Discrete or intermediary, used in reproduction()"""
+        # print(f"recombination start: population size = {len(population)}")
+
+        # TODO Amount of parents TBD, research (Contemporary Evolution Strategies)
+        # Number of parents used for recombination
+        # num_parents = round(len(population) * 0.2)
+
+        alive = population.alive
+
+        # Uniform random parent selection
+        # Choose all parents for global recombination (recommended)
+        num_parents = max(2, len(alive))
+        parents = RNG.choice(alive, size=num_parents, replace=False)
+
+        # Empty child
+        child = Individual()
+        child.requires_eval = True
+
+        # Get weigths and stepsizes from all parents
+        parent_weights = [np.array(p.genotype["weights"]) for p in parents]
+        parent_stepsizes = [np.array(p.genotype["stepsizes"]) for p in parents]
+
+        # Discrete recombination on weights
+        child_weights = [float(RNG.choice(col))
+                         for col in zip(*parent_weights)]
+
+        # Intermediate recombination on stepsizes
+        child_stepsizes = [float(np.mean(col))
+                           for col in zip(*parent_stepsizes)]
+
+        child.genotype = {
+            "weights": child_weights,
+            "stepsizes": child_stepsizes,
+        }
+
+        return child
+
+    def reproduction(self, population: Population) -> Population:
+        # console.log("Reproducing...")
+
+        offspring: list[Individual] = []
+
+        # Make offspring with previous generation
+        while len(offspring) < OFFSPRING_SIZE:
+            offspring.append(self.recombination(population))
+
+        # Choose mutation type
+        match self.stepsize_type:
+            case "n":
+                mutate = self.mutation_nstep
+            case "one":
+                mutate = self.mutation_onestep
+
+        # Mutate individuals
+        for i, individual in enumerate(offspring):
+            offspring[i] = mutate(individual)
+
+        # Kill previous generation
+        for individual in population:
+            individual.alive = False
+
+        # Add new offspring to population
+        population.extend(offspring)
+        return population
+
+    def survivor_selection(self, population: Population) -> Population:
+        """Deterministic elitist replacement by (mu, lambda), selects only from offspring"""
+
+        # Only choose from alive population (new generation)
+        alive = population.alive
+
+        # (mu + lambda) is worse for self adaption according to theory
+        best = alive.best(
+            sort="min", n=self.config.target_population_size)
+
+        # print(f"best count: {len(best)}")
+        # print(f"fitnesses: {[ind.fitness for ind in population]}")
+
+        # Kill rest of remaining population that are not scoring high enough
+        for ind in population:
+            if ind not in best:
+                ind.alive = False
+
+        return population
+
+    def decode_weights(self, weights: npt.NDArray[np.float64]):
+
+        weights = np.array(weights)
+
+        split_point = self.input_size * HIDDEN_SIZE
+
+        input_to_hidden = weights[:split_point].reshape(
+            self.input_size, HIDDEN_SIZE)
+        hidden_to_output = weights[split_point:].reshape(
+            HIDDEN_SIZE, self.output_size)
+
+        return [input_to_hidden, hidden_to_output]
+
+    def evaluate(self, population: Population) -> Population:
+        """Evaluation function, look at ariel.simulation.tasks.targeted_locomotion for inspiration"""
+        # TODO General idea, make it walk to the finish in the olympic arena.
+
+        to_eval = [
+            ind for ind in population.alive if ind.requires_eval
+        ]
+
+        if not to_eval:
+            return population
+
+        # Calculate fitness for all individuals
+        for ind in to_eval:
+            weights = ind.genotype.get("weights")
+            decoded_weights = self.decode_weights(weights)
+            # print(decoded_weights)
+            ind.fitness = run_experiment(decoded_weights, mode="simple")
+            ind.requires_eval = False
+
+        return population
+
+    def evolve(self) -> Individual | None:
+        """Runs the evolutaion strategies algorithm"""
+
+        console.log("Evolving")
+        # Make population
+        population = Population([
+            self.make_individual() for _ in range(self.config.target_population_size)
+        ])
+
+        console.log("Initial population created")
+        population = self.evaluate(population)
+        console.log("Initial population evaluated")
+
+        ops = [
+            EAOperation(self.reproduction),
+            EAOperation(self.evaluate),
+            EAOperation(self.survivor_selection),
+        ]
+
+        # Run algorithm for generations
+        ea = EA(
+            population,
+            operations=ops,
+            num_steps=self.config.num_steps,
+            is_maximisation=self.config.is_maximisation,
+        )
+
+        ea.run()
+
+        return ea.get_solution("best", only_alive=False)
+
+
+if __name__ == "__main__":
+    main()
