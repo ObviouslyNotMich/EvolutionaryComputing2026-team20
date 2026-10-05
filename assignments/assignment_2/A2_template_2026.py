@@ -27,6 +27,7 @@ a rendered video, or a single frame.
 # Standard library
 from pathlib import Path
 from typing import Literal
+import argparse
 
 # Third-party libraries
 import mujoco as mj
@@ -73,8 +74,8 @@ SIM_DURATION: float = 15.0  # seconds of simulated time per evaluation
 MODE: ViewerTypes = "simple"  # see run_experiment() for the options
 
 # TODO Determine algorithm parameters
-GENERATIONS = 30
-TARGET_SIZE = 10 # Population size
+GENERATIONS = 40
+TARGET_SIZE = 5 # Population size
 OFFSPRING_SIZE = TARGET_SIZE * 7 # 1/7 ratio is recommended or 1/4 ratio.
 
 WEIGHTS_SCALE = 0.5
@@ -373,8 +374,31 @@ def run_experiment(weights, mode: ViewerTypes = MODE) -> float:
     return fitness
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="EA2026 Assignment 2"
+    )
+
+    parser.add_argument(
+        "--mutation",
+        choices=["n", "one"],
+        default=SIGMA_MODE,
+        help=f"Mutation step-size mode. Either 'n' or 'one' Default: {SIGMA_MODE}",
+    )
+
+    parser.add_argument(
+        "--database",
+        default="database.db",
+        help="Path to the SQLite database file Default: database.db",
+    )
+
+    return parser.parse_args()
+
 def main() -> None:
     """Run a single demo evaluation with a randomly-weighted controller."""
+
+    args = parse_args()
+
     # A quick look at the size of the problem you are about to search.
     mj.set_mjcb_control(None)
     world = build_world()
@@ -396,18 +420,20 @@ def main() -> None:
     console.log(f"controller inputs (len(data.qpos)) : {input_size}")
     console.log(f"controller outputs (model.nu)      : {output_size}")
     console.log(f"genotype length (total weights)    : {num_weights}")
+    console.log(f"mutation stepsize mode             : {args.mutation}")
+    console.log(f"database                           : {args.database}")
 
-    ea = EvolutionStategies(input_size, output_size, SIGMA_MODE)
+    ea = EvolutionStategies(input_size, output_size, args.mutation, args.database)
 
     best_ind = ea.evolve()
 
     console.log("--- Results ---")
     console.log(f"best = {best_ind}")
 
-    weights = best_ind.genotype.get("weights")
-    decoded_weights = ea.decode_weights(weights)
-    # print(decoded_weights)
-    run_experiment(decoded_weights, mode="launcher")
+    # weights = best_ind.genotype.get("weights")
+    # decoded_weights = ea.decode_weights(weights)
+    # # print(decoded_weights)
+    # run_experiment(decoded_weights, mode="launcher")
 
 
 # ============================================================================ #
@@ -450,23 +476,18 @@ def main() -> None:
 
 
 class EvolutionStategies:
-    def __init__(self, input_size: int, output_size: int, stepsize_type: StepsizeType) -> None:
+    def __init__(self, input_size: int, output_size: int, stepsize_type: StepsizeType, db_file_name: str) -> None:
 
         self.input_size = input_size
-
         self.output_size = output_size
-
         self.stepsize_type = stepsize_type
 
         self.config = EASettings(
-
-            is_maximisation=False,  # minimize distance probably
-
+            is_maximisation=False,  # minimize distance
             num_steps=GENERATIONS,
-
             target_population_size=TARGET_SIZE,
-
-            output_folder=Path("__data__"), db_file_name="database.db"
+            output_folder=Path("__data__"), 
+            db_file_name=db_file_name
         )
 
     def make_individual(self) -> Individual:
@@ -513,7 +534,7 @@ class EvolutionStategies:
 
         ind.genotype = {
             "weights": weights.tolist(),
-            "stepsizes": [mut_stepsize],
+            "stepsizes": mut_stepsize.tolist(),
         }
 
         return ind
@@ -671,9 +692,9 @@ class EvolutionStategies:
             ind.fitness = run_experiment(decoded_weights, mode="simple")
             ind.requires_eval = False
 
-        best = population.best(sort="min")
-        for ind in best:
-            print(f"Best fitness: {ind.fitness}")
+        # best = population.best(sort="min")
+        # for ind in best:
+        #     print(f"Best fitness: {ind.fitness}")
 
         return population
 
@@ -685,10 +706,7 @@ class EvolutionStategies:
         population = Population([
             self.make_individual() for _ in range(self.config.target_population_size)
         ])
-
-        console.log("Initial population created")
         population = self.evaluate(population)
-        console.log("Initial population evaluated")
 
         ops = [
             EAOperation(self.reproduction),
@@ -702,6 +720,7 @@ class EvolutionStategies:
             operations=ops,
             num_steps=self.config.num_steps,
             is_maximisation=self.config.is_maximisation,
+            db_file_path=self.config.output_folder / self.config.db_file_name
         )
 
         ea.run()
