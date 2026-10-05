@@ -74,7 +74,7 @@ SIM_DURATION: float = 15.0  # seconds of simulated time per evaluation
 MODE: ViewerTypes = "simple"  # see run_experiment() for the options
 
 # TODO Determine algorithm parameters
-GENERATIONS = 40
+GENERATIONS = 2
 TARGET_SIZE = 5 # Population size
 OFFSPRING_SIZE = TARGET_SIZE * 7 # 1/7 ratio is recommended or 1/4 ratio.
 
@@ -380,16 +380,19 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--mutation",
-        choices=["n", "one"],
-        default=SIGMA_MODE,
-        help=f"Mutation step-size mode. Either 'n' or 'one' Default: {SIGMA_MODE}",
+        "--seed",
+        "-s",
+        type=int,
+        default=SEED,
+        help="Seed used for random functions",
     )
 
     parser.add_argument(
-        "--database",
-        default="database.db",
-        help="Path to the SQLite database file Default: database.db",
+        "--mutation",
+        "-m",
+        choices=["n", "one"],
+        default=SIGMA_MODE,
+        help=f"Mutation step-size mode. Either 'n' or 'one' Default: {SIGMA_MODE}",
     )
 
     return parser.parse_args()
@@ -398,6 +401,11 @@ def main() -> None:
     """Run a single demo evaluation with a randomly-weighted controller."""
 
     args = parse_args()
+
+    # Reassign seed with given cmd seed
+    global RNG
+    RNG = np.random.default_rng(args.seed)
+    set_seed(args.seed)
 
     # A quick look at the size of the problem you are about to search.
     mj.set_mjcb_control(None)
@@ -421,9 +429,12 @@ def main() -> None:
     console.log(f"controller outputs (model.nu)      : {output_size}")
     console.log(f"genotype length (total weights)    : {num_weights}")
     console.log(f"mutation stepsize mode             : {args.mutation}")
-    console.log(f"database                           : {args.database}")
+    console.log(f"seed                               : {args.seed}")
 
-    ea = EvolutionStategies(input_size, output_size, args.mutation, args.database)
+    # Standard name of db using mutation stepsize mode and seed.
+    db_name = f"db_{args.mutation}_{args.seed}"
+
+    ea = EvolutionStategies(input_size, output_size, args.mutation, db_name)
 
     best_ind = ea.evolve()
 
