@@ -28,6 +28,9 @@ a rendered video, or a single frame.
 from pathlib import Path
 from typing import Literal
 import argparse
+import multiprocessing
+import os
+from concurrent.futures import ProcessPoolExecutor
 
 # Third-party libraries
 import mujoco as mj
@@ -374,6 +377,11 @@ def run_experiment(weights, mode: ViewerTypes = MODE) -> float:
     return fitness
 
 
+def evaluate_candidate(weights: list[npt.NDArray[np.float64]]) -> float:
+    """One headless evaluation; runs in a worker process."""
+    return run_experiment(weights, mode="simple")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="EA2026 Assignment 2"
@@ -393,6 +401,14 @@ def parse_args() -> argparse.Namespace:
         choices=["n", "one"],
         default=SIGMA_MODE,
         help=f"Mutation step-size mode. Either 'n' or 'one' Default: {SIGMA_MODE}",
+    )
+
+    parser.add_argument(
+        "--workers",
+        "-w",
+        type=int,
+        default=max(1, (os.cpu_count() or 2) - 1),
+        help="Parallel simulation processes",
     )
 
     return parser.parse_args()
@@ -434,9 +450,14 @@ def main() -> None:
     # Standard name of db using mutation stepsize mode and seed.
     db_name = f"db_{args.mutation}_{args.seed}"
 
-    ea = EvolutionStategies(input_size, output_size, args.mutation, db_name)
+    # Processes, not threads: MuJoCo's control callback is global per process.
+    with ProcessPoolExecutor(
+        max_workers=args.workers, mp_context=multiprocessing.get_context("spawn"),
+    ) as pool:
+        ea = EvolutionStategies(input_size, output_size, args.mutation, db_name,
+                                evaluate_batch=lambda batch: pool.map(evaluate_candidate, batch))
 
-    best_ind = ea.evolve()
+        best_ind = ea.evolve()
 
     console.log("--- Results ---")
     console.log(f"best = {best_ind}")
@@ -487,11 +508,14 @@ def main() -> None:
 
 
 class EvolutionStategies:
-    def __init__(self, input_size: int, output_size: int, stepsize_type: StepsizeType, db_file_name: str) -> None:
+    def __init__(self, input_size: int, output_size: int, stepsize_type: StepsizeType, db_file_name: str,
+                 evaluate_batch=None) -> None:
 
         self.input_size = input_size
         self.output_size = output_size
         self.stepsize_type = stepsize_type
+        # Parallel evaluation if given, otherwise sequential in this process.
+        self.evaluate_batch = evaluate_batch or (lambda batch: map(evaluate_candidate, batch))
 
         self.config = EASettings(
             is_maximisation=False,  # minimize distance
@@ -695,12 +719,10 @@ class EvolutionStategies:
         if not to_eval:
             return population
 
-        # Calculate fitness for all individuals
-        for ind in to_eval:
-            weights = ind.genotype.get("weights")
-            decoded_weights = self.decode_weights(weights)
-            # print(decoded_weights)
-            ind.fitness = run_experiment(decoded_weights, mode="simple")
+        # Calculate fitness for all individuals (in parallel)
+        decoded = [self.decode_weights(ind.genotype.get("weights")) for ind in to_eval]
+        for ind, fitness in zip(to_eval, self.evaluate_batch(decoded), strict=True):
+            ind.fitness = fitness
             ind.requires_eval = False
 
         # best = population.best(sort="min")
