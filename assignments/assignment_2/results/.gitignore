@@ -1,0 +1,4 @@
+# Keep uncompressed result databases locally; commit the ZIP archives.
+*.db
+*.db-wal
+*.db-shm
