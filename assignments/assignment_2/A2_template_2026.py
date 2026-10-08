@@ -77,8 +77,8 @@ SIM_DURATION: float = 15.0  # seconds of simulated time per evaluation
 MODE: ViewerTypes = "simple"  # see run_experiment() for the options
 
 # TODO Determine algorithm parameters
-GENERATIONS = 2
-TARGET_SIZE = 5 # Population size
+GENERATIONS = 200
+TARGET_SIZE = 15 # Minimum based on Evolutionary Algortihms in Theory and Practice by T. Bäck
 OFFSPRING_SIZE = TARGET_SIZE * 7 # 1/7 ratio is recommended or 1/4 ratio.
 
 WEIGHTS_SCALE = 0.5
@@ -635,8 +635,16 @@ class EvolutionStategies:
                          for col in zip(*parent_weights)]
 
         # Intermediate recombination on stepsizes
-        child_stepsizes = [float(np.mean(col))
-                           for col in zip(*parent_stepsizes)]
+        child_stepsizes = []
+
+        # Choose two random parents, give mean of their stepsizes to child
+        for i in range(len(parent_stepsizes[0])):
+            parent_indices = RNG.choice(len(parents), size=2, replace=False)
+
+            sigma_a = parent_stepsizes[parent_indices[0]][i]
+            sigma_b = parent_stepsizes[parent_indices[1]][i]
+
+            child_stepsizes.append(float((sigma_a + sigma_b) / 2))
 
         child.genotype = {
             "weights": child_weights,
