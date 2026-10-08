@@ -47,7 +47,7 @@ from ariel.simulation.environments import SimpleFlatWorld, OlympicArena, CraterT
 from ariel.utils.renderers import single_frame_renderer, video_renderer
 from ariel.utils.runners import simple_runner
 from ariel.utils.video_recorder import VideoRecorder
-from ariel.simulation.tasks.targeted_locomotion import fitness_delta_distance, distance_to_target
+from ariel.simulation.tasks.targeted_locomotion import fitness_delta_distance, distance_to_target, fitness_direct_path
 
 # Type aliases
 type ViewerTypes = Literal["launcher",
@@ -56,7 +56,7 @@ type ViewerTypes = Literal["launcher",
 # --- RANDOM GENERATOR SETUP --- #
 # Fix the seed while you are debugging.
 # Report results over MULTIPLE seeds.
-SEED = 42
+SEED = 42 # Tested on the following seeds: 21, 42, 61, 84, 105, 126
 RNG = np.random.default_rng(SEED)
 
 # ariel.ec's own generators/mutators/crossover draw from a separate,
@@ -72,12 +72,12 @@ DATA.mkdir(parents=True, exist_ok=True)
 
 # --- EXPERIMENT CONSTANTS --- #
 SPAWN_POS: list[float] = [0.0, 0.0, 0.1]  # where the robot starts
-TARGET_POSITION: list[float] = [5.0 ,5.0, 0.1] # [5.5, 0.0, 0.6]  # where it should end up
+TARGET_POSITION: list[float] = [-3.0 ,0.0, 0.1] # [5.5, 0.0, 0.6]  # where it should end up
 SIM_DURATION: float = 15.0  # seconds of simulated time per evaluation
 MODE: ViewerTypes = "simple"  # see run_experiment() for the options
 
 # TODO Determine algorithm parameters
-GENERATIONS = 200
+GENERATIONS = 150
 TARGET_SIZE = 15 # Minimum based on Evolutionary Algortihms in Theory and Practice by T. Bäck
 OFFSPRING_SIZE = TARGET_SIZE * 7 # 1/7 ratio is recommended or 1/4 ratio.
 
@@ -105,6 +105,22 @@ def build_world() -> SimpleFlatWorld:
     """
     world = SimpleFlatWorld()
 
+    # Places visual marker for target position, does not collide with robot.
+    target_marker = world.spec.worldbody.add_geom()
+    target_marker.name = "target_marker"
+    target_marker.type = mj.mjtGeom.mjGEOM_SPHERE
+
+    target_marker.pos = np.array([
+        TARGET_POSITION[0],
+        TARGET_POSITION[1],
+        TARGET_POSITION[2] + 0.05,
+    ])
+
+    target_marker.size = np.array([0.10, 0.0, 0.0])
+    target_marker.rgba = np.array([1.0, 0.0, 0.0, 1.0])
+    target_marker.contype = 0
+    target_marker.conaffinity = 0
+
     return world
 
 
@@ -122,7 +138,7 @@ def build_robot() -> CoreModule:
     Change the body and your genotype length changes with it. Keep the body
     FIXED within an experiment.
     """
-    return spider_8()
+    return snake()
 
 
 # ============================================================================ #
@@ -155,10 +171,9 @@ CLOCK_HZ: float = 1.0 # Frequency of the sine/cosine clock inputs
 
 def controller_inputs(data:mj.MjData) -> npt.NDArray[np.float64]:
     """The robot state + direction to the target + a clock + a constant bias"""
-    # Straight line distance to the target at spawn 5.5m in our case
-    distance_at_spawn = np.linalg.norm(np.subtract(TARGET_POSITION[:3], SPAWN_POS[:3]))
+    distance_at_spawn = np.linalg.norm(np.subtract(TARGET_POSITION[:2], SPAWN_POS[:2]))
     # Distance from current position to the target, scaled so it starts at 1 (to avoid saturation region of tanh).
-    distance_to_target = (np.asarray(TARGET_POSITION[:3]) - data.qpos[0:3]) / distance_at_spawn
+    distance_to_target = (np.asarray(TARGET_POSITION[:2]) - data.qpos[0:2]) / distance_at_spawn
     phase = 2 * np.pi * CLOCK_HZ * data.time
     clock = [np.sin(phase), np.cos(phase)]
     return np.concatenate([data.qpos, distance_to_target, clock, [1.0]])
@@ -298,15 +313,23 @@ def run_experiment(weights, mode: ViewerTypes = MODE) -> float:
     mj.mj_forward(model, data)
 
     # --- Wire up the controller -------------------------------------------- #
-    # Sizes are read from the compiled model, never hardcoded - they depend on
-    # the body you chose in build_robot().
-    input_size = len(controller_inputs(data))
-    output_size = model.nu
 
-    # weights = make_random_weights(input_size, output_size)
+
+    initial_position = get_core_position(data)
+    previous_position = initial_position.copy()
+    total_path_length = 0.0
 
     def control_callback(m: mj.MjModel, d: mj.MjData) -> None:
         """Compute and apply actions; MuJoCo calls this every physics step."""
+        nonlocal previous_position, total_path_length
+
+        # Calculate distance travelled per step.
+        current_position = get_core_position(d).copy()
+        step_distance = np.linalg.norm(current_position[:2] - previous_position[:2])
+
+        total_path_length += float(step_distance)
+        previous_position = current_position
+
         actions = nn_controller(m, d, weights)
 
         # DIRECT application (see the controller contract above).
@@ -318,7 +341,7 @@ def run_experiment(weights, mode: ViewerTypes = MODE) -> float:
         # d.ctrl[:] = np.clip(d.ctrl, -np.pi / 2, np.pi / 2)
 
     # --- Record the starting point ----------------------------------------- #
-    initial_position = get_core_position(data)
+    
 
     # --- Run ---------------------------------------------------------------- #
     if mode != "no_control":
@@ -362,10 +385,14 @@ def run_experiment(weights, mode: ViewerTypes = MODE) -> float:
 
     # --- Score -------------------------------------------------------------- #
     final_position = get_core_position(data)
-    # console.log(f"Final position: {final_position}")
+
+    # Add final movement after last control callback
+    final_step_distance = np.linalg.norm(final_position[:2] - previous_position[:2])
+    total_path_length += float(final_step_distance)
 
     # fitness = fitness_function(initial_position, final_position)
-    fitness = distance_to_target(final_position, TARGET_POSITION)
+    # fitness = distance_to_target(final_position, TARGET_POSITION)
+    fitness = fitness_direct_path(initial_position, final_position, TARGET_POSITION, total_path_length)
 
     # console.log(f"start  : {np.round(initial_position, 3)}")
     # console.log(f"end    : {np.round(final_position, 3)}")
@@ -446,7 +473,7 @@ def main() -> None:
     console.log(f"seed                               : {args.seed}")
 
     # Standard name of db using mutation stepsize mode and seed.
-    db_name = f"db_{args.mutation}_{args.seed}"
+    db_name = f"db_{args.mutation}_{args.seed}.db"
 
     # Processes, not threads: MuJoCo's control callback is global per process.
     with ProcessPoolExecutor(
@@ -460,10 +487,10 @@ def main() -> None:
     console.log("--- Results ---")
     console.log(f"best = {best_ind}")
 
-    # weights = best_ind.genotype.get("weights")
-    # decoded_weights = ea.decode_weights(weights)
-    # # print(decoded_weights)
-    # run_experiment(decoded_weights, mode="launcher")
+    weights = best_ind.genotype.get("weights")
+    decoded_weights = ea.decode_weights(weights)
+    # print(decoded_weights)
+    run_experiment(decoded_weights, mode="launcher")
 
 
 # ============================================================================ #
