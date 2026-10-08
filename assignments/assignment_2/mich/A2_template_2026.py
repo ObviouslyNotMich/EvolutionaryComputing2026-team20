@@ -28,6 +28,8 @@ a rendered video, or a single frame.
 from pathlib import Path
 from typing import Literal
 import argparse
+import json
+import sqlite3
 import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
@@ -87,6 +89,22 @@ type StepsizeType = Literal["n", "one"]
 SIGMA_MODE: StepsizeType = "n"
 SIGMA_INIT = WEIGHTS_SCALE * 0.2 # 20% of initial scale
 SIGMA_BOUNDARY = SIGMA_INIT * 0.1 
+
+# Fitness choice (--fitness): "distance" = original final XY distance only,
+# "walking" = distance + penalties below.
+type FitnessMode = Literal["distance", "walking"]
+FITNESS_MODE: FitnessMode = "walking"
+
+# Walking-aware fitness:
+#   fitness = XY distance + 1 * core-contact fraction (dragging)
+#             + 5 * airborne fraction (jumping) + 1 * low-core shortfall
+# Contacts are sampled every 0.1 s after 1 s settling. No height/airtime bonus.
+CORE_CONTACT_WEIGHT = 1.0
+AIRBORNE_WEIGHT = 5.0
+CLEARANCE_WEIGHT = 1.0
+CLEARANCE_TARGET = 0.02  # metres between core underside and supporting feet
+CONTACT_SETTLING_TIME = 1.0
+SAMPLE_INTERVAL = 0.1
 
 
 # ============================================================================ #
@@ -193,6 +211,8 @@ def nn_controller(
     w1, w2 = weights
 
     # --- INPUTS ---------------------------------------------------------- #
+    # Bare qpos - the simplest choice, not necessarily a good one. See
+    # YOUR JOB below.
     inputs = controller_inputs(data)
 
     # --- FORWARD PASS ----------------------------------------------------- #
@@ -241,23 +261,74 @@ def get_core_position(data: mj.MjData) -> npt.NDArray[np.float64]:
 def fitness_function(
     initial_position: npt.NDArray[np.float64],
     final_position: npt.NDArray[np.float64],
+    core_contact_fraction: float = 0.0,
+    airborne_fraction: float = 0.0,
+    low_core_shortfall: float = 0.0,
 ) -> float:
     """Score one evaluation. LOWER IS BETTER.
 
-    The plain version: how far is the robot from the target when time runs out?
-
-    `initial_position` is unused here on purpose - it is passed in because the
-    moment you want a less naive fitness you will need it. Some things worth
-    thinking about (and, ideally, comparing in your report):
-      * Distance *reduced* rather than distance remaining, so a robot that
-        starts closer is not rewarded for standing still.
-      * Penalising a robot that falls over or leaves the arena.
-      * Whether the z-axis should count at all - a robot that jumps is not
-        closer to the target in any way you care about.
-    See `ariel.simulation.tasks.targeted_locomotion` for some worked variants.
+    Planar distance plus dragging, flight and low-core penalties.
     """
-    target = np.asarray(TARGET_POSITION)
-    return float(np.linalg.norm(final_position[:2] - target[:2]))
+    distance = distance_to_target(final_position, np.asarray(TARGET_POSITION))
+    return (distance + CORE_CONTACT_WEIGHT * core_contact_fraction
+            + AIRBORNE_WEIGHT * airborne_fraction + CLEARANCE_WEIGHT * low_core_shortfall)
+
+
+class EvaluationTracker:
+    """Samples terrain contacts and core clearance every SAMPLE_INTERVAL seconds."""
+
+    def __init__(self, model: mj.MjModel) -> None:
+        self.core = model.geom("robot1_core").id
+        self.robot_geoms = {
+            i for i in range(model.ngeom)
+            if (mj.mj_id2name(model, mj.mjtObj.mjOBJ_GEOM, i) or "").startswith("robot1_")
+        }
+        # Core mesh vertices in the geom frame, for the true (tilted) underside.
+        mesh = model.geom_dataid[self.core]
+        start = model.mesh_vertadr[mesh]
+        self.core_vertices = model.mesh_vert[start:start + model.mesh_vertnum[mesh]].copy()
+        self.next_sample = CONTACT_SETTLING_TIME
+        self.samples = self.core_contacts = self.airborne = 0
+        self.shortfalls: list[float] = []
+
+    def core_underside(self, data: mj.MjData) -> float:
+        rotation = data.geom_xmat[self.core].reshape(3, 3)
+        return float((self.core_vertices @ rotation[2]).min() + data.geom_xpos[self.core][2])
+
+    def sample(self, data: mj.MjData) -> None:
+        if data.time < self.next_sample:
+            return
+        self.next_sample += SAMPLE_INTERVAL
+        core_contact, feet = False, []
+        for contact in data.contact[:data.ncon]:
+            if contact.dist > 0 or contact.efc_address < 0:  # active contacts only
+                continue
+            a, b = int(contact.geom1), int(contact.geom2)
+            if (a in self.robot_geoms) == (b in self.robot_geoms):  # self/terrain-only
+                continue
+            if (a if a in self.robot_geoms else b) == self.core:
+                core_contact = True
+            else:
+                feet.append(float(contact.pos[2]))  # any non-core robot geom is a leg
+        self.samples += 1
+        self.core_contacts += int(core_contact)
+        if not (core_contact or feet):
+            self.airborne += 1  # flight: penalised separately, no clearance credit
+            return
+        clearance = 0.0 if core_contact else max(0.0, self.core_underside(data) - np.mean(feet))
+        self.shortfalls.append(max(0.0, CLEARANCE_TARGET - clearance) / CLEARANCE_TARGET)
+
+    def metrics(self, initial: npt.NDArray[np.float64], final: npt.NDArray[np.float64]) -> dict:
+        """All fitness components, so runs with either fitness can be compared."""
+        n = max(1, self.samples)
+        core, airborne = self.core_contacts / n, self.airborne / n
+        shortfall = float(np.mean(self.shortfalls)) if self.shortfalls else 1.0
+        return {
+            "distance": distance_to_target(final, TARGET_POSITION),
+            "core_contact_fraction": core, "airborne_fraction": airborne,
+            "low_core_shortfall": shortfall,
+            "walking_fitness": fitness_function(initial, final, core, airborne, shortfall),
+        }
 
 
 # ============================================================================ #
@@ -265,7 +336,7 @@ def fitness_function(
 # ============================================================================ #
 
 
-def run_experiment(weights, mode: ViewerTypes = MODE) -> float:
+def run_experiment(weights, mode: ViewerTypes = MODE, metrics: dict | None = None) -> float:
     """Set up the world, run one simulation, and return the fitness.
 
     This is the function your EA calls once per individual, with `mode` set
@@ -304,6 +375,7 @@ def run_experiment(weights, mode: ViewerTypes = MODE) -> float:
     output_size = model.nu
 
     # weights = make_random_weights(input_size, output_size)
+    tracker = EvaluationTracker(model)
 
     def control_callback(m: mj.MjModel, d: mj.MjData) -> None:
         """Compute and apply actions; MuJoCo calls this every physics step."""
@@ -311,6 +383,7 @@ def run_experiment(weights, mode: ViewerTypes = MODE) -> float:
 
         # DIRECT application (see the controller contract above).
         d.ctrl[:] = actions
+        tracker.sample(d)
 
         # DELTA application - comment out the line above and use these instead:
         # delta = 0.05
@@ -364,8 +437,16 @@ def run_experiment(weights, mode: ViewerTypes = MODE) -> float:
     final_position = get_core_position(data)
     # console.log(f"Final position: {final_position}")
 
-    # fitness = fitness_function(initial_position, final_position)
-    fitness = distance_to_target(final_position, TARGET_POSITION)
+    if not np.isfinite(data.qpos).all():
+        return 1e6
+    components = tracker.metrics(initial_position, final_position)
+    if metrics is not None:
+        metrics.update(components)
+    if FITNESS_MODE == "distance":
+        # Original fitness: final XY distance only.
+        fitness = distance_to_target(final_position, TARGET_POSITION)
+    else:
+        fitness = components["walking_fitness"]
 
     # console.log(f"start  : {np.round(initial_position, 3)}")
     # console.log(f"end    : {np.round(final_position, 3)}")
@@ -375,9 +456,48 @@ def run_experiment(weights, mode: ViewerTypes = MODE) -> float:
     return fitness
 
 
-def evaluate_candidate(weights: list[npt.NDArray[np.float64]]) -> float:
+def initialise_worker(fitness_mode: FitnessMode) -> None:
+    """Worker processes re-import this file, so pass the fitness choice on."""
+    global FITNESS_MODE
+    FITNESS_MODE = fitness_mode
+
+
+def evaluate_candidate(weights: list[npt.NDArray[np.float64]]) -> tuple[float, dict]:
     """One headless evaluation; runs in a worker process."""
-    return run_experiment(weights, mode="simple")
+    metrics: dict = {}
+    return run_experiment(weights, mode="simple", metrics=metrics), metrics
+
+
+def compare(db_files: list[Path]) -> None:
+    """Re-simulate each run's best controller and print the SAME measures for all.
+
+    Fitness values of the two modes are not comparable with each other; raw
+    distance, core contact, airborne time and clearance are.
+    """
+    mj.set_mjcb_control(None)
+    world = build_world()
+    world.spawn(build_robot().spec, position=SPAWN_POS, correct_collision_with_floor=True)
+    model = world.spec.compile()
+    data = mj.MjData(model)
+    mj.mj_forward(model, data)
+    input_size, output_size = len(controller_inputs(data)), model.nu
+    split = input_size * HIDDEN_SIZE
+    console.log(f"{'run':<28} {'fitness':>9} {'distance':>9} {'core':>6} {'air':>6} "
+                f"{'low-core':>9} {'walking':>9}")
+    for db_file in db_files:
+        with sqlite3.connect(db_file) as db:
+            genotype, fitness = db.execute(
+                "SELECT genotype_, fitness_ FROM individual WHERE fitness_ IS NOT NULL "
+                "ORDER BY fitness_ LIMIT 1").fetchone()
+        flat = np.array(json.loads(genotype)["weights"] if isinstance(genotype, str)
+                        else genotype["weights"])
+        weights = [flat[:split].reshape(input_size, HIDDEN_SIZE),
+                   flat[split:].reshape(HIDDEN_SIZE, output_size)]
+        m: dict = {}
+        run_experiment(weights, mode="simple", metrics=m)
+        console.log(f"{Path(db_file).name:<28} {fitness:9.4f} {m['distance']:9.4f} "
+                    f"{m['core_contact_fraction']:6.1%} {m['airborne_fraction']:6.1%} "
+                    f"{m['low_core_shortfall']:9.1%} {m['walking_fitness']:9.4f}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -402,6 +522,22 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--fitness",
+        "-f",
+        choices=["distance", "walking"],
+        default=FITNESS_MODE,
+        help=f"'distance' (original) or 'walking' (distance + penalties). Default: {FITNESS_MODE}",
+    )
+
+    parser.add_argument(
+        "--compare",
+        nargs="+",
+        type=Path,
+        metavar="DB",
+        help="Compare the best controller of each database on the same measures",
+    )
+
+    parser.add_argument(
         "--workers",
         "-w",
         type=int,
@@ -415,9 +551,13 @@ def main() -> None:
     """Run a single demo evaluation with a randomly-weighted controller."""
 
     args = parse_args()
+    if args.compare:
+        compare(args.compare)
+        return
 
     # Reassign seed with given cmd seed
-    global RNG
+    global RNG, FITNESS_MODE
+    FITNESS_MODE = args.fitness
     RNG = np.random.default_rng(args.seed)
     set_seed(args.seed)
 
@@ -446,11 +586,12 @@ def main() -> None:
     console.log(f"seed                               : {args.seed}")
 
     # Standard name of db using mutation stepsize mode and seed.
-    db_name = f"db_{args.mutation}_{args.seed}"
+    db_name = f"db_{args.fitness}_{args.mutation}_{args.seed}"
 
     # Processes, not threads: MuJoCo's control callback is global per process.
     with ProcessPoolExecutor(
         max_workers=args.workers, mp_context=multiprocessing.get_context("spawn"),
+        initializer=initialise_worker, initargs=(args.fitness,),
     ) as pool:
         ea = EvolutionStategies(input_size, output_size, args.mutation, db_name,
                                 evaluate_batch=lambda batch: pool.map(evaluate_candidate, batch))
@@ -512,7 +653,6 @@ class EvolutionStategies:
         self.input_size = input_size
         self.output_size = output_size
         self.stepsize_type = stepsize_type
-        # Parallel evaluation if given, otherwise sequential in this process.
         self.evaluate_batch = evaluate_batch or (lambda batch: map(evaluate_candidate, batch))
 
         self.config = EASettings(
@@ -719,8 +859,9 @@ class EvolutionStategies:
 
         # Calculate fitness for all individuals (in parallel)
         decoded = [self.decode_weights(ind.genotype.get("weights")) for ind in to_eval]
-        for ind, fitness in zip(to_eval, self.evaluate_batch(decoded), strict=True):
+        for ind, (fitness, metrics) in zip(to_eval, self.evaluate_batch(decoded), strict=True):
             ind.fitness = fitness
+            ind.tags = metrics  # all components stored in the database for comparison
             ind.requires_eval = False
 
         # best = population.best(sort="min")
