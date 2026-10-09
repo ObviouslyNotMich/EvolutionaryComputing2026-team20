@@ -427,6 +427,14 @@ def parse_args() -> argparse.Namespace:
         default=SIGMA_MODE,
         help=f"Mutation step-size mode. Either 'n' or 'one' Default: {SIGMA_MODE}",
     )
+    
+    parser.add_argument(
+        "--random",
+        "-r",
+        type=bool,
+        default=False,
+        help="Enable random search",
+    )
 
     parser.add_argument(
         "--workers",
@@ -435,6 +443,8 @@ def parse_args() -> argparse.Namespace:
         default=max(1, (os.cpu_count() or 2) - 1),
         help="Parallel simulation processes",
     )
+    
+    
 
     return parser.parse_args()
 
@@ -473,7 +483,10 @@ def main() -> None:
     console.log(f"seed                               : {args.seed}")
 
     # Standard name of db using mutation stepsize mode and seed.
-    db_name = f"db_{args.mutation}_{args.seed}.db"
+    if args.random:
+        db_name = f"db_random_{args.seed}.db"
+    else:
+        db_name = f"db_{args.mutation}_{args.seed}.db"
 
     # Processes, not threads: MuJoCo's control callback is global per process.
     with ProcessPoolExecutor(
@@ -482,7 +495,10 @@ def main() -> None:
         ea = EvolutionStategies(input_size, output_size, args.mutation, db_name,
                                 evaluate_batch=lambda batch: pool.map(evaluate_candidate, batch))
 
-        best_ind = ea.evolve()
+        if args.random:
+            best_ind = ea.random_search()
+        else:
+            best_ind = ea.evolve()
 
     console.log("--- Results ---")
     console.log(f"best = {best_ind}")
@@ -587,7 +603,7 @@ class EvolutionStategies:
         # New mutation step size
         mut_stepsize = stepsize * np.exp(tau * global_noise)
 
-        # Check stepsize does not exceed boundary
+        # Check stepsize does not exceed min boundary
         mut_stepsize = np.maximum(mut_stepsize, SIGMA_BOUNDARY)
 
         weights = weights + mut_stepsize * RNG.normal(size=len(weights))
@@ -740,6 +756,21 @@ class EvolutionStategies:
             HIDDEN_SIZE, self.output_size)
 
         return [input_to_hidden, hidden_to_output]
+    
+    def random_population(self, population: Population) -> Population:
+        
+        new_population = [
+            self.make_individual() for _ in range(self.config.target_population_size)
+        ]
+
+        # Kill previous generation
+        for individual in population:
+            individual.alive = False
+
+        # Add new population to population
+        population.extend(new_population)
+        return population
+        
 
     def evaluate(self, population: Population) -> Population:
         """Evaluation function, look at ariel.simulation.tasks.targeted_locomotion for inspiration"""
@@ -763,6 +794,34 @@ class EvolutionStategies:
         #     print(f"Best fitness: {ind.fitness}")
 
         return population
+    
+    def random_search(self) -> Individual | None:
+        """Runs the evolutaion strategies algorithm"""
+
+        console.log("Random search")
+        # Make population
+        population = Population([
+            self.make_individual() for _ in range(self.config.target_population_size)
+        ])
+        population = self.evaluate(population)
+
+        ops = [
+            EAOperation(self.random_population),
+            EAOperation(self.evaluate),
+        ]
+
+        # Run algorithm for generations
+        ea = EA(
+            population,
+            operations=ops,
+            num_steps=self.config.num_steps,
+            is_maximisation=self.config.is_maximisation,
+            db_file_path=self.config.output_folder / self.config.db_file_name
+        )
+
+        ea.run()
+
+        return ea.get_solution("best", only_alive=False)
 
     def evolve(self) -> Individual | None:
         """Runs the evolutaion strategies algorithm"""
